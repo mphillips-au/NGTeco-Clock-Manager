@@ -24,6 +24,14 @@ from clockmanager.services.devices import (
     build_device,
     build_mock_device,
 )
+from clockmanager.services.diagnostics import (
+    CapabilityReport,
+    ConnectionReport,
+    ConnectionStep,
+    DiagnosticsService,
+    LiveWindow,
+    ProtocolTrace,
+)
 from clockmanager.services.employees import EmployeeProfile, EmployeeService
 from clockmanager.services.reports import ReportService
 from clockmanager.services.sync import StoredAttendance, SyncResult, SyncService, SyncSummary
@@ -43,18 +51,24 @@ __all__ = [
     "AuthenticatedUser",
     "BackupService",
     "BackupSummary",
+    "CapabilityReport",
+    "ConnectionReport",
+    "ConnectionStep",
     "ConnectionTestResult",
     "DeleteImpact",
     "DeviceProfile",
     "DeviceService",
     "DeviceStatus",
+    "DiagnosticsService",
     "DiscoveredDevice",
     "EmployeeProfile",
     "EmployeeService",
+    "LiveWindow",
     "MockDeviceFactory",
     "OfflineDeviceState",
     "OfflineReport",
     "PayScheduleProfile",
+    "ProtocolTrace",
     "ReportService",
     "RestorePreview",
     "RestoreResult",

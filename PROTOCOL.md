@@ -96,6 +96,31 @@ is the only path, and it needs an operator-supplied name, refuses duplicate
 names and already-stored addresses, and writes locally only — the device
 itself is never changed by being discovered.
 
+## Diagnostics (PHASE 10)
+
+Admin-only protocol diagnostics capture what the wire carries without
+changing it (`protocol/trace.py`, `services/diagnostics.py`):
+
+- connection report: timed connect, device-clock read and a
+  disconnect/reconnect cycle, per step
+- protocol trace: transport TX/RX on real hardware (a recording wrapper
+  around the pyzk transport logs command codes, byte counts and
+  redacted previews; the mock has no socket, so its trace says so and
+  times device operations instead), raw + parsed user records, raw +
+  parsed attendance, a short live-capture window and the capability
+  report, every step timed
+- raw reads stay inside the protocol layer: whole 120-byte records are
+  redacted (credential region zeroed, wrong-sized buffers refused) before
+  anything leaves it, and attendance bytes — which hold no credentials —
+  are previewed bounded (128 bytes max)
+- diagnostics builds devices without write unlocks and offers no
+  write/delete/clear/set-time operation anywhere in the path
+
+The mock carries raw user records like the adapter; it carries a raw
+attendance payload only when its script is given a fixture one, otherwise
+diagnostics shows parsed attendance with an explanatory note rather than
+inventing bytes.
+
 ## Write protocol (PHASE 03)
 
 Generic pyzk `set_user()` is NOT approved for MB1, and is never called.

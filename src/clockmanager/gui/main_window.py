@@ -126,7 +126,7 @@ class MainWindow(QMainWindow):
         self.reports_view = ReportsView(context.employees, context.reports, self, role=role)
         self.device_settings_view = DeviceSettingsView(self._service, self, role=role)
         self.audit_view = AuditView(context.audit, self)
-        self.diagnostics_view = DiagnosticsView(context, self._service, self)
+        self.diagnostics_view = DiagnosticsView(context, self._service, self, role=role)
         self.backup_view = BackupView(context, self, role=role)
         self.accounts_view: UserAccountsView | None = None
         if current_user is not None and self._role == Role.ADMIN:

@@ -12,6 +12,8 @@ Test:
 - pay-period calculations
 - report calculations
 - authorization
+- diagnostics redaction (credential region zeroed, previews bounded)
+- diagnostics timing and failure-as-result behavior
 
 ## Fixtures
 
@@ -34,6 +36,7 @@ Provide a simulated device for:
 - writes
 - deletes
 - failures
+- diagnostics (raw user records; raw attendance only from a fixture payload)
 
 ## Integration
 

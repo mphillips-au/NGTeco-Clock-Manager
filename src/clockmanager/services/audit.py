@@ -54,6 +54,7 @@ class AuditAction(StrEnum):
     AUTH_PASSWORD_CHANGE = "auth.password_change"
     BACKUP_CREATE = "backup.create"
     BACKUP_RESTORE = "backup.restore"
+    DIAGNOSTICS_EXPORT = "diagnostics.export"
 
 
 class AuditOutcome(StrEnum):

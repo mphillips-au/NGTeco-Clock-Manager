@@ -89,7 +89,7 @@ from clockmanager.protocol.records import (
 )
 from clockmanager.protocol.retry import RetryPolicy, call_with_retry
 
-__all__ = ["NGTecoMB1Device", "TransportFactory"]
+__all__ = ["NGTecoMB1Device", "TransportFactory", "default_transport"]
 
 _logger = get_logger(__name__)
 
@@ -106,7 +106,13 @@ _WRITE_UNLOCK_REASON = (
 )
 
 
-def _default_transport(settings: DeviceConnectionSettings) -> ZK:
+def default_transport(settings: DeviceConnectionSettings) -> ZK:
+    """Build the stock pyzk transport.
+
+    Public so diagnostics can wrap it with packet capture
+    (:mod:`clockmanager.protocol.trace`); the adapter itself uses it when no
+    factory is given.
+    """
     return ZK(
         settings.host,
         port=settings.port,
@@ -146,7 +152,7 @@ class NGTecoMB1Device:
         self,
         settings: DeviceConnectionSettings,
         *,
-        transport_factory: TransportFactory = _default_transport,
+        transport_factory: TransportFactory = default_transport,
         retry_policy: RetryPolicy | None = None,
         auto_reconnect: bool = True,
         allow_writes: bool = False,
@@ -362,6 +368,8 @@ class NGTecoMB1Device:
 
         Protocol-internal. The result must never be returned to the service or
         GUI layers: use :meth:`get_users`, which discards credential bytes.
+        Diagnostics redacts each record inside :mod:`clockmanager.protocol.trace`
+        before anything leaves this layer.
         """
         self.capabilities.require(Capability.READ_USERS)
 
@@ -371,6 +379,24 @@ class NGTecoMB1Device:
 
         records: list[RawUserRecord] = self._call(_read, description="Reading user records")
         return records
+
+    def read_raw_attendance_payload(self) -> tuple[bytes, int]:
+        """Read the raw attendance payload and the device's record count.
+
+        Protocol-internal. Attendance bytes hold no credentials, so
+        diagnostics may preview them; parsing still goes through the
+        application-owned parser. Returns ``(payload, record_count)``.
+        """
+        self.capabilities.require(Capability.READ_ATTENDANCE)
+
+        def _read(transport: Any) -> tuple[bytes, int]:
+            transport.read_sizes()
+            record_count = _as_count(getattr(transport, "records", None)) or 0
+            payload, _size = transport.read_with_buffer(CMD_ATTLOG_RRQ)
+            return payload, record_count
+
+        result: tuple[bytes, int] = self._call(_read, description="Reading raw attendance")
+        return result
 
     def next_available_uid(self) -> int:
         """The lowest UID not currently in use, for a newly created user."""
