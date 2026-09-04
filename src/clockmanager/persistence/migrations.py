@@ -205,6 +205,77 @@ def _migrate_to_4(connection: Connection) -> None:
     )
 
 
+def _migrate_to_5(connection: Connection) -> None:
+    """Add PHASE 05 business tables: employees, device links, pay schedules.
+
+    Additive only: no existing table is touched. ``IF NOT EXISTS`` keeps the
+    migration resumable after an interruption. Timesheets are derived on
+    demand and intentionally have no table: raw attendance stays immutable.
+    """
+    connection.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS employees (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                user_id VARCHAR(64) NOT NULL,
+                first_name VARCHAR(64) NOT NULL DEFAULT '',
+                last_name VARCHAR(64) NOT NULL DEFAULT '',
+                active BOOLEAN NOT NULL DEFAULT 1,
+                department VARCHAR(120) NOT NULL DEFAULT '',
+                position VARCHAR(120) NOT NULL DEFAULT '',
+                email VARCHAR(255) NOT NULL DEFAULT '',
+                notes VARCHAR(2000) NOT NULL DEFAULT '',
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                CONSTRAINT uq_employees_user_id UNIQUE (user_id)
+            )
+            """
+        )
+    )
+    connection.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS employee_device_links (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                employee_id INTEGER NOT NULL REFERENCES employees (id) ON DELETE CASCADE,
+                device_id INTEGER NOT NULL REFERENCES devices (id) ON DELETE CASCADE,
+                user_id VARCHAR(64) NOT NULL,
+                device_uid INTEGER,
+                CONSTRAINT uq_employee_device UNIQUE (employee_id, device_id)
+            )
+            """
+        )
+    )
+    connection.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_employee_links_device_user "
+            "ON employee_device_links (device_id, user_id)"
+        )
+    )
+    connection.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS pay_schedules (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                name VARCHAR(120) NOT NULL,
+                schedule_type VARCHAR(32) NOT NULL,
+                anchor_date DATE NOT NULL,
+                timezone VARCHAR(64) NOT NULL DEFAULT 'UTC',
+                day_cutoff_hour INTEGER NOT NULL DEFAULT 0,
+                duplicate_interval_seconds INTEGER NOT NULL DEFAULT 60,
+                max_shift_hours FLOAT NOT NULL DEFAULT 16.0,
+                display_decimal BOOLEAN NOT NULL DEFAULT 0,
+                daily_overtime_hours FLOAT,
+                weekly_overtime_hours FLOAT,
+                is_active BOOLEAN NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+    )
+
+
 def _parse_stored_datetime(value: str) -> datetime:
     """Parse a SQLite-stored datetime string back into a datetime."""
     from datetime import datetime as _datetime
@@ -241,6 +312,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=4,
         description="Add attendance sync columns (received_at, source, event_key, employee) and sync_history",
         apply=_migrate_to_4,
+    ),
+    Migration(
+        version=5,
+        description="Add employees, employee_device_links and pay_schedules (PHASE 05)",
+        apply=_migrate_to_5,
     ),
 )
 

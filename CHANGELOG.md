@@ -2,6 +2,81 @@
 
 ## Unreleased
 
+### PHASE 05 — Employees / Timesheets / Payroll (2026-09-04)
+
+Business layer above raw attendance: employees, pay schedules and derived,
+recalculable timesheets. Verified against SQLite and the mock context; no
+real-device run.
+
+#### Domain (`clockmanager.domain.payroll`, PySide6-free)
+
+- `Employee`: canonical user ID, names, active flag, department, position,
+  email (validated), notes.
+- `PaySchedule` / `PayScheduleType`: weekly, bi-weekly, semi-monthly,
+  monthly periods in an explicit IANA timezone; `pay_period_for` and
+  `pay_periods_between` with boundary tests for every cadence.
+- `TimesheetRules`: day-cutoff hour, duplicate interval, maximum shift,
+  optional daily/weekly overtime thresholds, HH:MM/decimal display.
+- `build_timesheet` / `summarise_day`: global chronological IN->OUT pairing
+  (an overnight pair stays one shift attributed to the IN day and flagged
+  `overnight`), duplicate flagging with exclusion, missing punches (trailing
+  IN, leading OUT, unknown punch values — preserved, never paired),
+  excessive shifts, daily/weekly/pay-period totals. Period overtime prefers
+  the daily rule when both are set, so weekly cannot double count.
+- `interpret_naive`: naive device-local wall time becomes aware in a named
+  zone — never silently labelled UTC. Durations are real elapsed time taken
+  in UTC: subtracting two aware datetimes that share one `ZoneInfo` object
+  compares wall time and ignores DST transitions (pinned by spring-forward
+  and fall-back tests: a 00:30-03:30 shift is 2h / 4h elapsed, not 3h).
+
+#### Persistence (schema version 5)
+
+- New `employees` table (canonical user ID unique), `employee_device_links`
+  (one row per employee/device pair, cascade delete removes mappings but
+  never the employee) and `pay_schedules` (cadence, anchor, timezone,
+  cutoff, duplicate interval, max shift, display, overtime thresholds, one
+  active). Timesheets have no table: they are derived on demand.
+- Forward-only migration 5, additive only, resumable; v1-upgrade tests plus
+  a guard that no credential/card/biometric column exists in the new tables.
+- New `EmployeeRepository`, `PayScheduleRepository` (single-active
+  enforcement), and `AttendanceRepository.list_for_users_in_range` for
+  timesheet reads (raw rows never modified).
+
+#### Services (via `context.employees`, `context.timesheets`)
+
+- `EmployeeService`: create/update/(de)activate/link/unlink with duplicate
+  user-ID refusal; every change audited (`employee.create/update/
+  deactivate/reactivate/link`).
+- `TimesheetService`: schedule administration plus `build` for one employee
+  and period (resolves canonical plus linked user IDs, interprets wall time
+  in the schedule zone) and `build_for_current_period`. Same-period rebuild
+  after new punches returns new totals — proof of derived/recalculable.
+
+#### GUI
+
+- New Employees view: list, search, add/edit dialog (domain-validated),
+  deactivate/reactivate; new Timesheets view: active-employee picker,
+  current/previous period, per-day rows (first IN, last OUT, worked, OT,
+  missing, flags) plus regular/overtime/total in the schedule's display
+  format. Both work off the UI thread; navigation grows to nine views.
+
+#### Dependencies
+
+- `tzdata` added: Windows ships no IANA database, and pay-period/DST
+  calculation needs `ZoneInfo` to resolve everywhere.
+
+#### Tests
+
+- 593 tests, 91% statement coverage. New suites: pay-period boundaries for
+  all four cadences, daily flags (missing/duplicate/excessive/overnight/
+  unknown punch), overtime precedence, DST spring-forward/fall-back elapsed
+  time, schedule-timezone attribution, naive-input rejection, HH:MM/decimal
+  formatting, employee CRUD/mapping/auditing, derived-timesheet builds
+  (isolation between employees, alias IDs, recalculation, overtime
+  schedule), v5 migration (fresh, v1 upgrade, resumability, no sensitive
+  columns), and GUI smoke tests for both views.
+- ruff (lint + format) and mypy strict pass clean.
+
 ### PHASE 04 — Attendance Synchronization (2026-09-04)
 
 Reliable live + historical attendance sync with local storage, duplicate-safe

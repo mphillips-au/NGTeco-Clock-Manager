@@ -339,3 +339,50 @@ def test_sync_migration_is_resumable(database) -> None:  # type: ignore[no-untyp
         migration.apply(connection)
 
     assert "sync_history" in inspect(database.engine).get_table_names()
+
+
+# -- schema version 5: employees and pay schedules (PHASE 05) -------------------
+
+
+def test_fresh_database_has_employee_and_schedule_tables(database) -> None:  # type: ignore[no-untyped-def]
+    initialise_database(database)
+    tables = inspect(database.engine).get_table_names()
+    assert "employees" in tables
+    assert "employee_device_links" in tables
+    assert "pay_schedules" in tables
+
+
+def test_v1_database_gains_employee_tables_without_losing_data(database) -> None:  # type: ignore[no-untyped-def]
+    _build_v1_database(database)
+    initialise_database(database)
+
+    tables = inspect(database.engine).get_table_names()
+    assert "employees" in tables
+    assert "employee_device_links" in tables
+    assert "pay_schedules" in tables
+    with database.session() as session:
+        assert session.query(DeviceRecord).one().name == "Existing clock"
+        events = session.execute(text("SELECT user_id, punch FROM attendance_events")).all()
+        assert events == [("1001", 0)]
+
+
+def test_employee_migration_is_resumable(database) -> None:  # type: ignore[no-untyped-def]
+    """Re-running after an interruption must not fail on existing tables."""
+    from clockmanager.persistence.migrations import MIGRATIONS as _MIGRATIONS
+
+    initialise_database(database)
+    migration = next(m for m in _MIGRATIONS if m.version == 5)
+    with database.engine.begin() as connection:
+        migration.apply(connection)
+        migration.apply(connection)
+
+    assert "employees" in inspect(database.engine).get_table_names()
+
+
+def test_no_credential_column_in_employee_tables(database) -> None:  # type: ignore[no-untyped-def]
+    """SECURITY.md: no PIN, card or biometric column may exist anywhere."""
+    initialise_database(database)
+    forbidden = {"pin", "password", "credential", "card", "fingerprint", "face", "template"}
+    for table in ("employees", "employee_device_links", "pay_schedules"):
+        columns = {c["name"].lower() for c in inspect(database.engine).get_columns(table)}
+        assert not (forbidden & columns), f"{table} has sensitive columns: {columns & forbidden}"
