@@ -22,6 +22,7 @@ EXPECTED_VIEWS = [
     "Live events",
     "Employees",
     "Timesheets",
+    "Reports",
     "Device settings",
     "Audit log",
     "Diagnostics",

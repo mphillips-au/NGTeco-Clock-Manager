@@ -19,6 +19,7 @@ from clockmanager.gui.views.device_settings import DeviceSettingsView
 from clockmanager.gui.views.diagnostics import DiagnosticsView
 from clockmanager.gui.views.employees import EmployeesView
 from clockmanager.gui.views.live import LiveEventsView
+from clockmanager.gui.views.reports import ReportsView
 from clockmanager.gui.views.timesheets import TimesheetsView
 from clockmanager.gui.views.user_form import UserFormDialog
 from clockmanager.gui.views.users import UsersView
@@ -31,6 +32,7 @@ __all__ = [
     "DiagnosticsView",
     "EmployeesView",
     "LiveEventsView",
+    "ReportsView",
     "TimesheetsView",
     "UserFormDialog",
     "UsersView",

@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+### PHASE 06 — Reports / Exports (2026-09-04)
+
+Derived, read-only reporting over immutable stored attendance and the
+append-only sync/audit history. Verified against SQLite and the mock
+context; no real-device run.
+
+#### Domain (`clockmanager.domain.reports`, PySide6-free)
+
+- `ReportType` (daily attendance, employee timesheet, weekly, pay-period,
+  exceptions, device activity, sync history, audit), `ReportFilter`
+  (date range, employee, user ID, device, department, punch/status,
+  exceptions-only, with inverted-date refusal) and `Report` (titled
+  string table; rows validated against the columns).
+- Dependency-free exporters: CSV via `csv`, JSON with metadata plus row
+  dicts, minimal single-sheet XLSX via `zipfile` (inline strings, no new
+  dependency), minimal Helvetica PDF via raw PDF objects. Columns are
+  display-safe by construction: no communication password, no credential
+  region, no event key.
+
+#### Services (`ReportService`, via `context.reports`)
+
+- All eight reports built from repository reads only; timesheet-based
+  reports reuse `TimesheetService` so exception flags always agree with
+  the Timesheets view. Weekly is Monday–Sunday regardless of pay cadence.
+- New filtered reads: `AttendanceRepository.list_in_range`,
+  `SyncHistoryRepository.list_filtered`, `AuditRepository.list_filtered`
+  (reads only; the append-only guards still hold).
+- `export()` returns `(bytes, filename, mime)` and audits every export as
+  `report.export` (new `AuditAction`).
+
+#### GUI
+
+- New Reports view: report picker, start/end dates, employee picker,
+  department filter, exceptions-only flag, Generate plus CSV/XLSX/PDF/JSON
+  export via save dialog. All work off the UI thread; navigation grows to
+  ten views.
+
+#### Tests
+
+- 613 tests. New suites: all eight reports, department/user/device/
+  punch/status scoping, unknown-punch exceptions, CSV/JSON/XLSX/PDF
+  round-trips (XLSX unzipped, PDF header), export auditing,
+  no-secret columns, reports-never-mutate attendance, plus GUI smoke
+  tests for the Reports view.
+- ruff (lint + format) and mypy strict pass clean.
+
 ### PHASE 05 — Employees / Timesheets / Payroll (2026-09-04)
 
 Business layer above raw attendance: employees, pay schedules and derived,

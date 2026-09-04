@@ -33,6 +33,7 @@ from clockmanager.gui.views import (
     DiagnosticsView,
     EmployeesView,
     LiveEventsView,
+    ReportsView,
     TimesheetsView,
     UsersView,
 )
@@ -69,6 +70,7 @@ class MainWindow(QMainWindow):
         self.live_view = LiveEventsView(self._service, self._sync_service, self)
         self.employees_view = EmployeesView(context.employees, self)
         self.timesheets_view = TimesheetsView(context.employees, context.timesheets, self)
+        self.reports_view = ReportsView(context.employees, context.reports, self)
         self.device_settings_view = DeviceSettingsView(self._service, self)
         self.audit_view = AuditView(context.audit, self)
         self.diagnostics_view = DiagnosticsView(context, self._service, self)
@@ -80,6 +82,7 @@ class MainWindow(QMainWindow):
             _NavigationEntry("Live events", self.live_view),
             _NavigationEntry("Employees", self.employees_view),
             _NavigationEntry("Timesheets", self.timesheets_view),
+            _NavigationEntry("Reports", self.reports_view),
             _NavigationEntry("Device settings", self.device_settings_view),
             _NavigationEntry("Audit log", self.audit_view),
             _NavigationEntry("Diagnostics", self.diagnostics_view),
@@ -175,6 +178,8 @@ class MainWindow(QMainWindow):
             self.employees_view.load()
         elif entry.widget is self.timesheets_view:
             self.timesheets_view.load_employees()
+        elif entry.widget is self.reports_view:
+            self.reports_view.load_employees()
         elif entry.widget is self.device_settings_view:
             self.device_settings_view.refresh()
         elif entry.widget is self.diagnostics_view:

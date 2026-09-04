@@ -31,6 +31,13 @@ from clockmanager.domain.payroll import (
     pay_period_for,
     pay_periods_between,
 )
+from clockmanager.domain.reports import (
+    ExportFormat,
+    Report,
+    ReportFilter,
+    ReportType,
+    export_report,
+)
 from clockmanager.domain.users import (
     CredentialAction,
     UserChange,
@@ -47,6 +54,7 @@ __all__ = [
     "DeviceInfo",
     "DeviceUser",
     "Employee",
+    "ExportFormat",
     "PayPeriod",
     "PaySchedule",
     "PayScheduleType",
@@ -54,6 +62,9 @@ __all__ = [
     "Privilege",
     "PunchDirection",
     "PunchInput",
+    "Report",
+    "ReportFilter",
+    "ReportType",
     "Timesheet",
     "TimesheetRules",
     "UserChange",
@@ -63,6 +74,7 @@ __all__ = [
     "describe_changes",
     "describe_privilege",
     "describe_punch",
+    "export_report",
     "format_hours",
     "interpret_naive",
     "pay_period_for",
