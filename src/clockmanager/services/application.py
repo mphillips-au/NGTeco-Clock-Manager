@@ -36,6 +36,7 @@ from clockmanager.services.devices import (
     MockDeviceFactory,
     build_device,
 )
+from clockmanager.services.diagnostics import DiagnosticsService
 from clockmanager.services.employees import EmployeeService
 from clockmanager.services.reports import ReportService
 from clockmanager.services.sync import SyncService
@@ -119,6 +120,11 @@ class ApplicationContext:
     def devices(self) -> DeviceService:
         """Device application service, wired to the configured device factory."""
         return DeviceService(self.database, device_factory=self.device_factory)
+
+    @property
+    def diagnostics(self) -> DiagnosticsService:
+        """Admin-only protocol diagnostics (PHASE 10)."""
+        return DiagnosticsService(self.devices, self.audit)
 
     @property
     def audit(self) -> AuditService:

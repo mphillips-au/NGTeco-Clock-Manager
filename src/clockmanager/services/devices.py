@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from clockmanager.diagnostics.logging_setup import get_logger
 from clockmanager.domain.auth import Permission, Role, require
@@ -43,6 +43,7 @@ from clockmanager.protocol.errors import DeviceError
 from clockmanager.protocol.interface import AttendanceDevice, DeviceConnectionSettings
 from clockmanager.protocol.mb1 import NGTecoMB1Device
 from clockmanager.protocol.mock import MockAttendanceDevice, MockDeviceScript
+from clockmanager.protocol.trace import RecordingTransport, TraceRecorder
 
 __all__ = [
     "DEFAULT_DEVICE_PORT",
@@ -594,6 +595,38 @@ class DeviceService:
             profile,
             allow_writes=allow_writes,
             allow_credential_writes=allow_credential_writes,
+        )
+
+    def build_traced(
+        self, profile: DeviceProfile, recorder: TraceRecorder
+    ) -> tuple[AttendanceDevice, str]:
+        """Build an unconnected device for diagnostics with packet capture.
+
+        Returns ``(device, transport_note)``. On real hardware the pyzk
+        transport is wrapped so genuine TX/RX traffic is recorded; with any
+        other factory (the mock has no socket) the device is built normally
+        and the note says there is no packet traffic to capture. Never
+        enables writes: diagnostics is read-only.
+        """
+        from clockmanager.protocol.mb1 import default_transport
+
+        if self._device_factory is not build_device:
+            return (
+                self._device_factory(profile),
+                "Mock transport performs no socket I/O: TX/RX below are timed "
+                "device operations, not captured packets.",
+            )
+
+        def _wrapped(settings: DeviceConnectionSettings) -> Any:
+            return RecordingTransport(default_transport(settings), recorder)
+
+        return (
+            NGTecoMB1Device(
+                profile.to_connection_settings(),
+                auto_reconnect=profile.auto_reconnect,
+                transport_factory=_wrapped,
+            ),
+            "Captured packets between this computer and the device.",
         )
 
     def capabilities(self, profile: DeviceProfile) -> DeviceCapabilities:

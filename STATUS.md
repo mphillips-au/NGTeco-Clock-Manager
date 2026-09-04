@@ -2,12 +2,11 @@
 
 ## Current phase
 
-PHASE 09 — Backup / offline resilience: **complete** (PHASE 08 — Device
-management / discovery also complete in this build).
+PHASE 10 — Developer diagnostics: **complete**.
 
 ## Next phase
 
-PHASE 10 — Polish / packaging.
+PHASE 11 — Biometric / card investigation.
 
 ## What exists now
 
@@ -38,10 +37,13 @@ Layer separation is in place and enforced by tests:
   (`historical`/`manual`/`live`/`background`/`recovery`) vocabulary
 - `clockmanager.services` — `bootstrap()`, `ApplicationContext`,
   `ApplicationStatus`, `DeviceService` (profiles, last-seen stamps,
-  per-device status, discovery wrappers, explicit `register_discovered`),
-  `UserService`, `AuditService`, `AuthService`, `SyncService`,
+  per-device status, discovery wrappers, explicit `register_discovered`,
+  traced builds for diagnostics), `UserService`, `AuditService`,
+  `AuthService`, `SyncService`,
   `EmployeeService`, `TimesheetService`, `ReportService`, `BackupService`
   (zip backup, preview/validation, confirmed restore, offline report),
+  `DiagnosticsService` (timed connection reports, protocol traces with
+  TX/RX + raw/parsed records + live window, sanitized JSON export),
   `MockDeviceFactory`
 - `clockmanager.domain.reports` — `ReportType` (8 kinds), `ReportFilter`,
   `Report`, `ExportFormat` (CSV/XLSX/PDF/JSON) plus dependency-free
@@ -55,6 +57,8 @@ Layer separation is in place and enforced by tests:
   views; the only subpackage allowed to import PySide6. Device settings hosts
   read-only discovery (check one address, scan the LAN, register by name);
   Backup (admin-only) creates/previews/restores backups and shows offline status.
+  Diagnostics (admin-only) runs timed connection reports, full protocol traces
+  with redacted raw detail, and sanitized JSON exports.
 
 Entry point `clockmanager` starts the GUI; `clockmanager --headless` runs the
 same bootstrap without importing PySide6.
@@ -230,6 +234,10 @@ Known device:
   schema outright; cross-version restores beyond that are untested.
   Restoring replaces the live database file contents in place — the safety
   backup is the way back.
+- Transport-level TX/RX capture runs only against real hardware and, like
+  everything else here, has not touched a real NG-MB1: it is proven against
+  a fake transport, and mock traces honestly time device operations
+  instead of showing packets.
 
 ## Employees / timesheets (PHASE 05)
 
@@ -321,6 +329,23 @@ reports and audit keep working with the clock down; `offline_report` (shown
 in the Backup view) lists per-device stored counts, last-seen and last sync,
 and the next successful sync re-reads the whole device log — the PHASE 04
 recovery path — picking up whatever was missed.
+
+## Developer diagnostics (PHASE 10)
+
+Admin-only protocol diagnostics, read-only by construction. A connection
+report times connect, clock read and a disconnect/reconnect cycle per step.
+A protocol trace captures one connected session: transport TX/RX on real
+hardware (a recording wrapper around the pyzk transport; the mock has no
+socket, so its trace times device operations instead), raw + parsed user
+records with the credential region zeroed inside the protocol layer, raw +
+parsed attendance, a short live-capture window (0-30 s, capped at 50
+events) and the capability report. Device failures arrive as failed
+results; only role refusal raises. Traces export as sanitized JSON,
+audited as `diagnostics.export` with counts only. The mock carries raw
+user records like the adapter and a raw attendance payload when its script
+is given a fixture one; diagnostics builds devices without write unlocks
+and offers no write/delete/clear/set-time operation anywhere (pinned by
+tests, including a GUI check that no such button exists).
 
 ## Protocol discoveries
 

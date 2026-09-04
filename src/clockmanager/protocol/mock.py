@@ -38,6 +38,7 @@ from clockmanager.protocol.capabilities import (
 )
 from clockmanager.protocol.constants import MAX_USER_UID, USER_CREDENTIAL_SLICE
 from clockmanager.protocol.errors import (
+    DeviceCapabilityError,
     DeviceConnectionError,
     DeviceNotConnectedError,
     DeviceValidationError,
@@ -136,6 +137,13 @@ class MockDeviceScript:
     #: Number of times a write should be rejected by the device before
     #: succeeding. Exercises the "device refused the write" path.
     write_failures: int = 0
+    #: Raw attendance payload for diagnostics (PHASE 10), as built by
+    #: ``tests.fixtures.mb1.build_attendance_payload``. ``None`` means this
+    #: mock carries parsed events only, so diagnostics shows parsed
+    #: attendance with an explanatory note instead of raw bytes.
+    attendance_raw: bytes | None = None
+    #: The device record count the raw payload above was read with.
+    attendance_record_count: int = 0
     #: When set, the mock stores this record instead of the one it was sent,
     #: so read-back comparison failure can be tested.
     corrupt_next_write: bool = False
@@ -267,6 +275,20 @@ class MockAttendanceDevice:
             RawUserRecord(uid=uid, user_id=parse_user_record(raw).user_id, raw=raw)
             for uid, raw in sorted(self._records.items())
         ]
+
+    def read_raw_attendance_payload(self) -> tuple[bytes, int]:
+        """Return the script's fixture payload, if it carries one.
+
+        Diagnostics-only. A mock built without ``attendance_raw`` has parsed
+        events but no packet bytes, and says so instead of inventing any.
+        """
+        self.capabilities.require(Capability.READ_ATTENDANCE)
+        self._guard()
+        if self._script.attendance_raw is None:
+            raise DeviceCapabilityError(
+                "This mock carries parsed attendance only; no raw payload was provided."
+            )
+        return self._script.attendance_raw, self._script.attendance_record_count
 
     def get_attendance(self) -> list[AttendanceEvent]:
         self.capabilities.require(Capability.READ_ATTENDANCE)

@@ -164,3 +164,22 @@ The headless service is the network boundary.
 
 Use structured logs with redaction.
 Protocol debugging can expose raw packets only in an explicit admin/developer mode and must redact known secret regions.
+
+## Diagnostics exports (PHASE 10)
+
+Protocol traces and their JSON exports are administrator-only: the
+Diagnostics view is hidden from office staff and viewers, and the service
+refuses non-admin roles regardless of what the widgets show.
+
+Raw user records reach the export with the credential region zeroed inside
+the protocol layer (`protocol/trace.py` refuses to redact buffers that are
+not exactly one 120-byte record, so an unknown shape can never pass secret
+bytes through). The export holds no communication password, PIN, card
+identifier or biometric value by construction, and a test pins the exact
+exported user keys plus the absence of the fixture credential marker.
+Every export is audited as `diagnostics.export` with counts only — never
+with bytes.
+
+Diagnostics builds devices without write unlocks and offers no
+write/delete/clear/set-time operation: investigation tooling must not
+become a casual path to destructive actions.

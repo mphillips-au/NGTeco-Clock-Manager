@@ -2,6 +2,71 @@
 
 ## Unreleased
 
+### PHASE 10 — Developer Diagnostics (2026-09-04)
+
+Admin-only protocol diagnostics, read-only by construction. Verified
+against SQLite, loopback-free fake transports, fixture payloads and the
+mock context; no real-device run.
+
+#### Protocol (`clockmanager.protocol.trace`, PySide6-free)
+
+- Credential-region redaction inside the protocol layer (wrong-sized
+  buffers refused, so unknown shapes can never leak), bounded hex previews
+  (128 bytes max — one redacted record always shows whole), per-record
+  redacted user snapshots, raw + parsed attendance snapshots with a
+  parsed-only fallback, and a `TraceRecorder` with per-step timings.
+- `RecordingTransport`: wraps the pyzk transport on real hardware and logs
+  genuine TX (command + payload size) / RX (byte count + redacted preview)
+  traffic; unknown attributes delegate so the adapter works unchanged.
+- New `read_raw_attendance_payload()` on the MB1 adapter (read-only;
+  attendance bytes hold no credentials) and on the mock, which carries a
+  raw payload only when its script is given a fixture one — otherwise
+  diagnostics shows parsed attendance with an explanatory note instead of
+  inventing bytes. `default_transport` is now public so traced builds can
+  wrap it.
+
+#### Services (`DiagnosticsService`, via `context.diagnostics`, PySide6-free)
+
+- `connection_report`: timed connect, device-clock read with drift note,
+  and a disconnect/reconnect cycle; stamps identity and last-seen on
+  success like a connection test. Device failures are failed results.
+- `protocol_trace`: one connected session — transport note, timed steps,
+  redacted user records, raw + parsed attendance, an optional 0-30 s live
+  listen capped at 50 events, capabilities, closing reconnect — always
+  disconnecting, even on failure. New `AuditAction` `diagnostics.export`.
+- `export_trace`: the trace as sanitized JSON (redacted hex only; no
+  communication password, PIN, card or biometric value by construction),
+  audited with counts only.
+- Every method requires `VIEW_DIAGNOSTICS` when a role is passed; only
+  refusal raises. `DeviceService.build_traced` builds without write
+  unlocks and says honestly when there is no packet traffic (mock).
+
+#### GUI
+
+- Diagnostics view (already admin-only via navigation) gains a connection
+  report button, a protocol trace button with a 0-30 s live-listen option,
+  a monospace redacted-detail pane, and a sanitized-JSON export via save
+  dialog. All work off the UI thread; existing checks are untouched. No
+  write/delete/clear/set-time control exists anywhere on the view.
+
+#### Tests
+
+- 20 trace tests: redaction (region zeroed, wrong sizes refused), bounded
+  previews, user-shaped payload masking, recorder sequencing/timing,
+  recording transport against a fake (TX + ACK, redacted RX, delegation),
+  user snapshots (parsed fields, truncation caps detail not counts),
+  attendance snapshots (raw + parsed, parsed-only fallback, corrupt
+  payload error), plus a no-write AST guard.
+- 17 service tests: passing/failing connection reports, full mock trace,
+  disconnect-always, live-window collection, fixture-payload raw
+  attendance, failure events-so-far, argument validation, role refusals,
+  capability report, sanitized audited export, failed-trace export,
+  traced-build notes and write-lock absence, plus the service no-write
+  guard; 7 GUI tests (report steps, redacted trace, live listen,
+  JSON export round-trip, export-without-trace, no destructive controls,
+  non-admin refusal).
+- ruff (lint + format) and mypy strict pass clean.
+
 ### PHASE 09 — Backup / Offline Resilience (2026-09-04)
 
 Recoverable, still useful with the clock down. Verified against SQLite and
