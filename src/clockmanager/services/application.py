@@ -34,7 +34,9 @@ from clockmanager.services.devices import (
     MockDeviceFactory,
     build_device,
 )
+from clockmanager.services.employees import EmployeeService
 from clockmanager.services.sync import SyncService
+from clockmanager.services.timesheets import TimesheetService
 from clockmanager.services.users import UserService
 
 __all__ = ["ApplicationContext", "ApplicationStatus", "bootstrap"]
@@ -128,6 +130,16 @@ class ApplicationContext:
     def sync(self) -> SyncService:
         """Attendance synchronisation service (PHASE 04)."""
         return SyncService(self.database, self.devices)
+
+    @property
+    def employees(self) -> EmployeeService:
+        """Employee business records (PHASE 05)."""
+        return EmployeeService(self.database, self.audit)
+
+    @property
+    def timesheets(self) -> TimesheetService:
+        """Derived timesheets over immutable attendance (PHASE 05)."""
+        return TimesheetService(self.database, self.employees)
 
     def status(self) -> ApplicationStatus:
         """Collect a display-ready status snapshot."""

@@ -20,6 +20,8 @@ EXPECTED_VIEWS = [
     "Users",
     "Attendance",
     "Live events",
+    "Employees",
+    "Timesheets",
     "Device settings",
     "Audit log",
     "Diagnostics",

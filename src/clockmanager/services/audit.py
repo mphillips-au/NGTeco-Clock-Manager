@@ -40,6 +40,11 @@ class AuditAction(StrEnum):
     USER_CREATE = "user.create"
     USER_UPDATE = "user.update"
     USER_DELETE = "user.delete"
+    EMPLOYEE_CREATE = "employee.create"
+    EMPLOYEE_UPDATE = "employee.update"
+    EMPLOYEE_DEACTIVATE = "employee.deactivate"
+    EMPLOYEE_REACTIVATE = "employee.reactivate"
+    EMPLOYEE_LINK = "employee.link"
 
 
 class AuditOutcome(StrEnum):

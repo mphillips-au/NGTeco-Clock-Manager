@@ -2,11 +2,11 @@
 
 ## Current phase
 
-PHASE 04 — Attendance synchronisation: **complete**.
+PHASE 05 — Employees / timesheets / payroll: **complete**.
 
 ## Next phase
 
-PHASE 05 — Employees / timesheets / payroll.
+PHASE 06 — Reports / exports.
 
 ## What exists now
 
@@ -18,7 +18,11 @@ Layer separation is in place and enforced by tests:
 - `clockmanager.domain` — `Privilege` (0 Employee / 14 Admin), `PunchDirection`
   (0 IN / 1 OUT), `DeviceIdentity`, `DeviceInfo`, `DeviceUser`,
   `AttendanceEvent`, plus user-management rules: `UserDraft`,
-  `CredentialAction`, `UserChange`, `UserWriteOutcome`, `describe_changes`
+  `CredentialAction`, `UserChange`, `UserWriteOutcome`, `describe_changes`,
+  plus PHASE 05 business models: `Employee`, `PaySchedule` /
+  `PayScheduleType` (weekly/biweekly/semimonthly/monthly), `TimesheetRules`,
+  `PayPeriod`, `PunchInput`, `DailySummary` / `PeriodSummary` / `Timesheet`,
+  `build_timesheet`, `interpret_naive`, `format_hours`
 - `clockmanager.persistence` — SQLAlchemy 2.0 ORM, SQLite engine, forward-only
   migrations, `DeviceRepository`, append-only `AuditRepository`
 - `clockmanager.protocol` — NG-MB1 core: `AttendanceDevice` and
@@ -31,12 +35,13 @@ Layer separation is in place and enforced by tests:
   (`historical`/`manual`/`live`/`background`/`recovery`) vocabulary
 - `clockmanager.services` — `bootstrap()`, `ApplicationContext`,
   `ApplicationStatus`, `DeviceService`, `UserService`, `AuditService`,
-  `SyncService`, `MockDeviceFactory`
+  `SyncService`, `EmployeeService`, `TimesheetService`, `MockDeviceFactory`
 - `clockmanager.security` — redaction helpers
 - `clockmanager.diagnostics` — structured JSON logging with a redacting filter
   on every handler
 - `clockmanager.gui` — PySide6 application: navigation shell plus Dashboard,
-  Users, Attendance, Live events, Device settings, Audit log and Diagnostics
+  Users, Attendance, Live events, Employees, Timesheets, Device settings,
+  Audit log and Diagnostics
   views; the only subpackage allowed to import PySide6
 
 Entry point `clockmanager` starts the GUI; `clockmanager --headless` runs the
@@ -47,8 +52,9 @@ built-in mock device with no hardware attached. The mock now keeps its contents
 for the life of the application context, so the write path can be exercised end
 to end without a clock.
 
-Database schema version 4: `schema_info`, `devices`, `device_users`,
-`attendance_events`, `audit_events`, `sync_history`. No user credential, card or biometric
+Database schema version 5: `schema_info`, `devices`, `device_users`,
+`attendance_events`, `audit_events`, `sync_history`, `employees`,
+`employee_device_links`, `pay_schedules`. No user credential, card or biometric
 column exists in any of them.
 
 ## User management (PHASE 03)
@@ -176,7 +182,7 @@ Known device:
   view works offline. Nothing has been run against the real NG-MB1 yet — the
   sync is proven against fixtures, the fake transport and the mock device
   only.
-- Employees, timesheets, reports and exports do not exist. Windows
+- Reports and exports do not exist. Windows
   packaging/installer is not started (PHASE 13).
 - SQLite returns naive datetimes on read. `received_at` is normalised to
   aware UTC on read (`as_aware_utc`); `occurred_at` stays naive deliberately
@@ -184,7 +190,31 @@ Known device:
   UTC. Event keys normalise both forms to the same wall-clock seconds, so
   duplicate detection is unaffected.
 - The employee snapshot on stored punches is a display-name string, not a
-  link: the real employee table and timesheet joins are PHASE 05.
+  link. PHASE 05 resolves the real employee independently: timesheets match
+  stored punches to employees through the canonical user ID plus every linked
+  device user ID, so the snapshot never affects calculation.
+
+## Employees / timesheets (PHASE 05)
+
+Employees are business records above device users: internal ID, canonical
+user ID, names, active flag, department, position, email, notes, plus
+per-device `(device, user ID)` links so one person can map to different IDs
+on different clocks. Deactivation is a flag, never a delete; every
+create/update/(de)activate/link is audited.
+
+Pay schedules cover weekly, bi-weekly, semi-monthly and monthly cadences in
+an explicit IANA timezone, with day-cutoff hour, duplicate interval,
+maximum shift length, HH:MM/decimal display and optional daily/weekly
+overtime thresholds. Exactly one schedule is active.
+
+Timesheets are derived on demand from immutable stored attendance and are
+recalculable: pairing is global and chronological (an overnight IN->OUT pair
+stays one shift attributed to the IN day), duplicates within the configured
+interval are flagged and excluded, and each day reports first IN, last OUT,
+worked time, missing/duplicate/excessive/overnight flags and overtime.
+Naive device-local times are interpreted as wall time in the schedule's
+timezone; durations are real elapsed time measured in UTC, so DST
+transitions total correctly.
 
 ## Protocol discoveries
 

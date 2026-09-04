@@ -13,7 +13,9 @@ from clockmanager.services.devices import (
     build_device,
     build_mock_device,
 )
+from clockmanager.services.employees import EmployeeProfile, EmployeeService
 from clockmanager.services.sync import StoredAttendance, SyncResult, SyncService, SyncSummary
+from clockmanager.services.timesheets import PayScheduleProfile, TimesheetRequest, TimesheetService
 from clockmanager.services.users import DeleteImpact, UserService, WriteAvailability
 
 __all__ = [
@@ -28,11 +30,16 @@ __all__ = [
     "DeleteImpact",
     "DeviceProfile",
     "DeviceService",
+    "EmployeeProfile",
+    "EmployeeService",
     "MockDeviceFactory",
+    "PayScheduleProfile",
     "StoredAttendance",
     "SyncResult",
     "SyncService",
     "SyncSummary",
+    "TimesheetRequest",
+    "TimesheetService",
     "UserService",
     "WriteAvailability",
     "bootstrap",

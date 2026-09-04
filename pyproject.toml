@@ -12,6 +12,9 @@ license = { text = "Proprietary" }
 authors = [{ name = "NGTeco Clock Manager Project" }]
 dependencies = [
     "SQLAlchemy>=2.0,<3.0",
+    # IANA timezone database for ZoneInfo on Windows (pay-period/DST
+    # calculation in PHASE 05). No-op on platforms that ship tzdata.
+    "tzdata>=2024.1",
     # Proven transport/command layer for ZKTeco-compatible devices. MB1-specific
     # record parsing is owned by this application (see PROTOCOL.md), so pyzk is
     # pinned: the adapter depends on its internal socket surface for live capture.

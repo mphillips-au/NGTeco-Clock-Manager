@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -20,6 +20,9 @@ from clockmanager.persistence.models import (
     AttendanceEventRecord,
     AuditEventRecord,
     DeviceRecord,
+    EmployeeDeviceLinkRecord,
+    EmployeeRecord,
+    PayScheduleRecord,
     SyncHistoryRecord,
     utc_now,
 )
@@ -28,6 +31,8 @@ __all__ = [
     "AttendanceRepository",
     "AuditRepository",
     "DeviceRepository",
+    "EmployeeRepository",
+    "PayScheduleRepository",
     "SyncHistoryRepository",
 ]
 
@@ -222,6 +227,137 @@ class AttendanceRepository:
         )
         value = self._session.execute(statement).scalar_one_or_none()
         return None if value is None else value
+
+    def list_for_user_in_range(
+        self,
+        *,
+        user_id: str,
+        start: datetime,
+        end: datetime,
+    ) -> list[AttendanceEventRecord]:
+        """Stored punches for one canonical user ID in ``[start, end]``.
+
+        Timesheet reads only; rows are never modified. ``start``/``end`` are
+        device-local wall times; callers compare against ``occurred_at``
+        which is stored verbatim from the device.
+        """
+        statement = (
+            select(AttendanceEventRecord)
+            .where(
+                AttendanceEventRecord.user_id == user_id,
+                AttendanceEventRecord.occurred_at >= start,
+                AttendanceEventRecord.occurred_at <= end,
+            )
+            .order_by(AttendanceEventRecord.occurred_at, AttendanceEventRecord.id)
+        )
+        return list(self._session.execute(statement).scalars().all())
+
+    def list_for_users_in_range(
+        self,
+        *,
+        user_ids: list[str],
+        start: datetime,
+        end: datetime,
+    ) -> list[AttendanceEventRecord]:
+        """Stored punches for several user IDs (one employee's mappings)."""
+        if not user_ids:
+            return []
+        statement = (
+            select(AttendanceEventRecord)
+            .where(
+                AttendanceEventRecord.user_id.in_(user_ids),
+                AttendanceEventRecord.occurred_at >= start,
+                AttendanceEventRecord.occurred_at <= end,
+            )
+            .order_by(AttendanceEventRecord.occurred_at, AttendanceEventRecord.id)
+        )
+        return list(self._session.execute(statement).scalars().all())
+
+
+class EmployeeRepository:
+    """Business-level employees plus their per-device user-ID mappings."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def list_all(self, *, include_inactive: bool = True) -> list[EmployeeRecord]:
+        statement = select(EmployeeRecord).order_by(EmployeeRecord.user_id)
+        rows = list(self._session.execute(statement).scalars().all())
+        if include_inactive:
+            return rows
+        return [row for row in rows if row.active]
+
+    def get(self, employee_id: int) -> EmployeeRecord | None:
+        return self._session.get(EmployeeRecord, employee_id)
+
+    def get_by_user_id(self, user_id: str) -> EmployeeRecord | None:
+        statement = select(EmployeeRecord).where(EmployeeRecord.user_id == user_id)
+        return self._session.execute(statement).scalar_one_or_none()
+
+    def add(self, record: EmployeeRecord) -> EmployeeRecord:
+        self._session.add(record)
+        self._session.flush()
+        return record
+
+    def links_for(self, employee_id: int) -> list[EmployeeDeviceLinkRecord]:
+        statement = select(EmployeeDeviceLinkRecord).where(
+            EmployeeDeviceLinkRecord.employee_id == employee_id
+        )
+        return list(self._session.execute(statement).scalars().all())
+
+    def add_link(self, link: EmployeeDeviceLinkRecord) -> EmployeeDeviceLinkRecord:
+        self._session.add(link)
+        self._session.flush()
+        return link
+
+    def remove_link(self, employee_id: int, device_id: int) -> bool:
+        statement = select(EmployeeDeviceLinkRecord).where(
+            EmployeeDeviceLinkRecord.employee_id == employee_id,
+            EmployeeDeviceLinkRecord.device_id == device_id,
+        )
+        link = self._session.execute(statement).scalar_one_or_none()
+        if link is None:
+            return False
+        self._session.delete(link)
+        self._session.flush()
+        return True
+
+    def count(self) -> int:
+        statement = select(func.count()).select_from(EmployeeRecord)
+        return int(self._session.execute(statement).scalar_one())
+
+
+class PayScheduleRepository:
+    """Named pay schedules; exactly one may be active."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def list_all(self) -> list[PayScheduleRecord]:
+        statement = select(PayScheduleRecord).order_by(PayScheduleRecord.name)
+        return list(self._session.execute(statement).scalars().all())
+
+    def get(self, schedule_id: int) -> PayScheduleRecord | None:
+        return self._session.get(PayScheduleRecord, schedule_id)
+
+    def get_active(self) -> PayScheduleRecord | None:
+        statement = select(PayScheduleRecord).where(PayScheduleRecord.is_active.is_(True))
+        return self._session.execute(statement).scalar_one_or_none()
+
+    def add(self, record: PayScheduleRecord) -> PayScheduleRecord:
+        self._session.add(record)
+        self._session.flush()
+        return record
+
+    def set_active(self, schedule_id: int) -> PayScheduleRecord | None:
+        """Activate one schedule and deactivate the rest."""
+        target = self._session.get(PayScheduleRecord, schedule_id)
+        if target is None:
+            return None
+        self._session.execute(update(PayScheduleRecord).values(is_active=False))
+        target.is_active = True
+        self._session.flush()
+        return target
 
 
 class SyncHistoryRepository:

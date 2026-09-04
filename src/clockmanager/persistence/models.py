@@ -12,11 +12,12 @@ never what it changed to.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Final
 
 from sqlalchemy import (
     Boolean,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -39,6 +40,9 @@ __all__ = [
     "Base",
     "DeviceRecord",
     "DeviceUserRecord",
+    "EmployeeDeviceLinkRecord",
+    "EmployeeRecord",
+    "PayScheduleRecord",
     "SchemaInfo",
     "SyncHistoryRecord",
     "utc_now",
@@ -46,7 +50,7 @@ __all__ = [
 
 #: Bumped whenever the schema changes. Every bump needs a matching entry in
 #: :data:`clockmanager.persistence.migrations.MIGRATIONS`.
-SCHEMA_VERSION: Final = 4
+SCHEMA_VERSION: Final = 5
 
 
 def utc_now() -> datetime:
@@ -115,6 +119,9 @@ class DeviceRecord(Base):
         back_populates="device", cascade="all, delete-orphan"
     )
     attendance_events: Mapped[list[AttendanceEventRecord]] = relationship(
+        back_populates="device", cascade="all, delete-orphan"
+    )
+    employee_links: Mapped[list[EmployeeDeviceLinkRecord]] = relationship(
         back_populates="device", cascade="all, delete-orphan"
     )
 
@@ -314,3 +321,107 @@ class AuditEventRecord(Base):
             f"AuditEventRecord(action={self.action!r}, outcome={self.outcome!r}, "
             f"target={self.target!r})"
         )
+
+
+class EmployeeRecord(Base):
+    """A business-level employee (PHASE 05).
+
+    The internal ID is the primary key. ``user_id`` is the canonical device
+    user ID used when no per-device link overrides it. Per-device differences
+    live in ``employee_device_links`` so one employee can map to different
+    user IDs on different clocks without hardcoding a single device.
+    """
+
+    __tablename__ = "employees"
+    __table_args__ = (UniqueConstraint("user_id", name="uq_employees_user_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    first_name: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    last_name: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    department: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    position: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    email: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    notes: Mapped[str] = mapped_column(String(2000), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    links: Mapped[list[EmployeeDeviceLinkRecord]] = relationship(
+        back_populates="employee", cascade="all, delete-orphan"
+    )
+
+    def __repr__(self) -> str:
+        return f"EmployeeRecord(id={self.id!r}, user_id={self.user_id!r})"
+
+
+class EmployeeDeviceLinkRecord(Base):
+    """Maps one employee to one (device, user ID) pair.
+
+    ``device_id`` references ``devices`` with cascade delete: removing a
+    device profile removes its mappings but never the employee.
+    """
+
+    __tablename__ = "employee_device_links"
+    __table_args__ = (
+        UniqueConstraint("employee_id", "device_id", name="uq_employee_device"),
+        Index("ix_employee_links_device_user", "device_id", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    employee_id: Mapped[int] = mapped_column(
+        ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    device_id: Mapped[int] = mapped_column(
+        ForeignKey("devices.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    device_uid: Mapped[int | None] = mapped_column(Integer, default=None)
+
+    employee: Mapped[EmployeeRecord] = relationship(back_populates="links")
+    device: Mapped[DeviceRecord] = relationship(back_populates="employee_links")
+
+    def __repr__(self) -> str:
+        return (
+            f"EmployeeDeviceLinkRecord(employee_id={self.employee_id!r}, "
+            f"device_id={self.device_id!r}, user_id={self.user_id!r})"
+        )
+
+
+class PayScheduleRecord(Base):
+    """One named pay schedule with its timesheet rules (PHASE 05).
+
+    Timesheets are derived from raw attendance on demand; this table holds
+    only the configuration they are calculated with: cadence, anchor date,
+    IANA timezone, day-cutoff hour, duplicate interval, maximum shift length,
+    display preference and optional overtime thresholds. Exactly one row
+    should carry ``is_active``; the repository enforces that on activation.
+    """
+
+    __tablename__ = "pay_schedules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    schedule_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    anchor_date: Mapped[date] = mapped_column(Date, nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), default="UTC", nullable=False)
+    day_cutoff_hour: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    duplicate_interval_seconds: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
+    max_shift_hours: Mapped[float] = mapped_column(Float, default=16.0, nullable=False)
+    display_decimal: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    daily_overtime_hours: Mapped[float | None] = mapped_column(Float, default=None)
+    weekly_overtime_hours: Mapped[float | None] = mapped_column(Float, default=None)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    def __repr__(self) -> str:
+        return f"PayScheduleRecord(id={self.id!r}, name={self.name!r})"
