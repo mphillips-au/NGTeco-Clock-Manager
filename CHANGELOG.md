@@ -2,6 +2,82 @@
 
 ## Unreleased
 
+### PHASE 12 — UI polish (2026-09-04)
+
+Presentation only. No service, protocol, persistence or permission behaviour
+changed: every screen calls the same services, off the UI thread, under the
+same role gates.
+
+#### Theme
+
+- `gui/theme.py` rewritten around a `Palette` dataclass per theme, with the
+  stylesheet generated from those tokens. Previously the dark sheet styled
+  only a handful of widgets, so the page background stayed light, card values
+  and group-box titles rendered dark-on-dark, and most of the dark theme was
+  unreadable. Every rule that paints a background now also sets a foreground.
+- Coverage added for menus, tooltips, scrollbars, tabs, date fields, progress
+  bars, item-view outlines and dialogs.
+- `current_palette()` lets a view colour a single table cell (items carry no
+  stylesheet) from the active theme instead of a hardcoded hex value.
+- Focus rings are keyboard-only: `FocusVisibilityFilter` (in `gui/app.py`)
+  records the Qt focus reason on the widget as `focusVisible`, and the
+  stylesheet keys the ring off that. Clicking a button no longer boxes it;
+  tabbing to it still does.
+
+#### Shared view vocabulary (`gui/views/common.py`)
+
+- `page_header()` — title, one line of purpose, hairline; used by every view.
+- `fill_table(..., empty_message=...)` — a centred, dimmed, unselectable line
+  spanning the table instead of a row of em-dashes or an empty white slab.
+- `build_table(..., stretch_columns=...)` — named columns absorb spare width,
+  the rest size to content, with `setResizeContentsPrecision(20)` so sizing
+  does not measure every row of a large table.
+- `confirm()` — action-named confirm button ("Delete user", not "Yes"), Cancel
+  as the default and escape button.
+- `notify()` — brief non-blocking corner toast for completed work; failures
+  also stay in the view's status line.
+- `primary_button()`, `muted_label()`, `tint_cell()`.
+
+#### Screens
+
+- Icons and avatars are drawn at runtime (`gui/icons.py`): no image assets,
+  correct at any DPI, recoloured with the theme. Sidebar navigation icons,
+  initials badges for people.
+- Main window: fixed navigation row height, `Ctrl+1`…`Ctrl+9` section
+  shortcuts, and a signed-in identity block naming the operator and role.
+- Dashboard: aligned stat cards with human timestamps ("Last seen today
+  09:25", full detail on hover), a painted seven-day IN/OUT trend
+  (`gui/views/charts.py`, no charting dependency), recent punches with
+  initials badges and IN/OUT colouring, and reference tables that no longer
+  show a phantom selected row.
+- Reports: free-text `YYYY-MM-DD` fields replaced with calendar pickers and
+  named ranges (Today, Yesterday, This week, Last week, This month, Last 30
+  days, Custom); filters laid out as a two-column form; export reports the
+  saved size and file name.
+- Users: search, privilege and "with PIN only" filters (the old privilege
+  picker and Admins-only checkbox were the same filter twice); enrolment and
+  privilege tinting now theme-aware.
+- Attendance: IN/OUT colouring, content-sized columns, filter empty states.
+- Device settings: form width capped, `Save` promoted, `Remove device`
+  marked as destructive.
+- Login: branded header, Enter submits, and a **Remember my username**
+  option. Only the username is stored (`QSettings`), never a password.
+
+#### Corrections
+
+- Device settings claimed "this build never writes to a device" even when
+  device writing was enabled. It now states only what that screen does.
+- Mock attendance is anchored to today rather than a fixed date in March
+  2026, so running against the built-in mock device shows a populated
+  dashboard and trend. Callers that need stable timestamps still pass
+  `reference`.
+
+#### Tests
+
+- Reports date-range tests rewritten for the pickers; `resolve_range()` is
+  tested directly as calendar arithmetic.
+- New tests for remembering and forgetting the login username.
+
 ### PHASE 11 — Biometric / Card Investigation (2026-09-04)
 
 Investigation only: no card, fingerprint or face operation was implemented,

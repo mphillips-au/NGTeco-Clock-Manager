@@ -8,6 +8,7 @@ and refuses hidden screens instead of crashing.
 from __future__ import annotations
 
 import pytest
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication, QDialog
 
 from clockmanager.domain.auth import Role
@@ -365,3 +366,47 @@ def test_accounts_view_lists_accounts_for_admin(
         assert names == {"boss", "office", "viewer"}
     finally:
         view.close()
+
+
+def test_login_remembers_username_when_asked(
+    qt_app: QApplication, mock_context: ApplicationContext
+) -> None:
+    """Ticking the box stores the username for the next sign-in."""
+    make_users(mock_context)
+    QSettings().remove("login/username")
+    dialog = LoginDialog(mock_context.auth)
+    try:
+        dialog._username.setText("viewer")
+        dialog._password.setText(PASSWORD)
+        dialog._remember.setChecked(True)
+        dialog._on_accept()
+    finally:
+        dialog.close()
+
+    assert QSettings().value("login/username") == "viewer"
+    reopened = LoginDialog(mock_context.auth)
+    try:
+        assert reopened._username.text() == "viewer"
+        assert reopened._remember.isChecked()
+        assert reopened._password.text() == ""  # never stored
+    finally:
+        reopened.close()
+        QSettings().remove("login/username")
+
+
+def test_login_forgets_username_when_unticked(
+    qt_app: QApplication, mock_context: ApplicationContext
+) -> None:
+    """Signing in with the box clear removes anything previously stored."""
+    make_users(mock_context)
+    QSettings().setValue("login/username", "viewer")
+    dialog = LoginDialog(mock_context.auth)
+    try:
+        dialog._remember.setChecked(False)
+        dialog._username.setText("viewer")
+        dialog._password.setText(PASSWORD)
+        dialog._on_accept()
+    finally:
+        dialog.close()
+
+    assert QSettings().value("login/username") in (None, "")

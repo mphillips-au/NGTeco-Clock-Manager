@@ -18,12 +18,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -35,10 +37,16 @@ from clockmanager.domain.models import DeviceUser
 from clockmanager.domain.users import UserDraft, UserWriteOutcome
 from clockmanager.gui.views.common import (
     build_table,
+    confirm,
     fill_table,
+    muted_label,
+    notify,
+    page_header,
+    primary_button,
     role_allows,
     run_off_thread,
-    section_label,
+    set_status,
+    tint_cell,
 )
 from clockmanager.gui.views.user_form import UserFormDialog
 from clockmanager.services.devices import DeviceProfile, DeviceService
@@ -71,19 +79,38 @@ class UsersView(QWidget):
         self._users: list[DeviceUser] = []
         self._visible: list[DeviceUser] = []
 
-        self._table = build_table(_HEADERS, self)
+        # Names take the spare width; identifiers and flags stay narrow.
+        self._table = build_table(_HEADERS, self, stretch_columns=(2, 3))
         self._table.itemSelectionChanged.connect(self._update_buttons)
         self._table.doubleClicked.connect(self._edit_user)
 
         self._filter = QLineEdit(self)
-        self._filter.setPlaceholderText("Search by name or user ID…")
+        self._filter.setPlaceholderText("Search by name or user ID…  (Ctrl+F)")
+        self._filter.setClearButtonEnabled(True)
+        self._filter.setAccessibleName("Search users by name or user ID")
         self._filter.textChanged.connect(self._apply_filter)
 
-        self._admins_only = QCheckBox("Admins only", self)
-        self._admins_only.toggled.connect(self._apply_filter)
+        focus_search = QShortcut("Ctrl+F", self)
+        focus_search.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        focus_search.activated.connect(self._filter.setFocus)
 
-        self._load_button = QPushButton("Read users from device", self)
+        self._privilege = QComboBox(self)
+        self._privilege.addItem("Everyone", "")
+        self._privilege.addItem("Employees", "Employee")
+        self._privilege.addItem("Admins", "Admin")
+        self._privilege.setAccessibleName("Filter by privilege")
+        self._privilege.currentIndexChanged.connect(self._apply_filter)
+
+        self._pin_only = QCheckBox("With PIN only", self)
+        self._pin_only.setToolTip(
+            "Show only users whose credential region is populated on the device."
+        )
+        self._pin_only.setAccessibleName("Show only users with a PIN set")
+        self._pin_only.toggled.connect(self._apply_filter)
+
+        self._load_button = primary_button("Read users from device", self)
         self._load_button.clicked.connect(self.load)
+        self._load_button.setShortcut("F5")
 
         self._add_button = QPushButton("Add user…", self)
         self._add_button.clicked.connect(self._add_user)
@@ -93,17 +120,19 @@ class UsersView(QWidget):
 
         self._delete_button = QPushButton("Delete…", self)
         self._delete_button.clicked.connect(self._delete_user)
+        self._delete_button.setShortcut("Delete")
 
         self._status = QLabel("Press “Read users from device” to load.", self)
         self._status.setWordWrap(True)
+        set_status(self._status, "Press “Read users from device” to load.", "info")
 
-        self._write_notice = QLabel("", self)
-        self._write_notice.setWordWrap(True)
+        self._write_notice = muted_label("", self)
 
         controls = QHBoxLayout()
         controls.addWidget(self._load_button)
         controls.addWidget(self._filter, stretch=1)
-        controls.addWidget(self._admins_only)
+        controls.addWidget(self._privilege)
+        controls.addWidget(self._pin_only)
 
         actions = QHBoxLayout()
         actions.addWidget(self._add_button)
@@ -112,7 +141,12 @@ class UsersView(QWidget):
         actions.addWidget(self._delete_button)
 
         layout = QVBoxLayout()
-        layout.addWidget(section_label("Users on device", self))
+        layout.addWidget(
+            page_header(
+                "Users",
+                "The people enrolled on the clock, their privilege and whether a PIN is set.",
+            )
+        )
         layout.addLayout(controls)
         layout.addWidget(self._status)
         layout.addWidget(self._table, stretch=1)
@@ -175,7 +209,7 @@ class UsersView(QWidget):
     def load(self) -> None:
         """Read the device user list off the UI thread."""
         self._load_button.setEnabled(False)
-        self._status.setText("Reading users…")
+        set_status(self._status, "Reading users…", "loading")
         run_off_thread(
             self._read_users,
             on_success=self._on_users_loaded,
@@ -191,35 +225,53 @@ class UsersView(QWidget):
     def _on_users_loaded(self, users: Any) -> None:
         self._load_button.setEnabled(True)
         if users is None:
-            self._status.setText("No device is configured. Add one in Device settings.")
+            set_status(
+                self._status,
+                "No device is configured. Add one in Device settings.",
+                "warning",
+            )
             self._users = []
-            fill_table(self._table, [])
+            fill_table(
+                self._table,
+                [],
+                empty_message="No device configured. Open Device settings to add one.",
+            )
             self._update_buttons()
             return
         if not isinstance(users, list):  # pragma: no cover - defensive
             return
 
         self._users = users
-        admins = sum(1 for user in users if user.is_admin)
-        self._status.setText(
-            f"{len(users)} user(s) on the device, {admins} with Admin privilege. "
-            "“PIN set” indicates the device's credential region is populated; "
-            "its contents are never read."
-        )
         self._apply_filter()
         self._refresh_write_availability()
 
     def _apply_filter(self) -> None:
         needle = self._filter.text().strip().lower()
-        admins_only = self._admins_only.isChecked()
+        privilege = str(self._privilege.currentData() or "")
+        pin_only = self._pin_only.isChecked()
         self._visible = [
             user
             for user in self._users
-            if (not admins_only or user.is_admin)
+            if (not privilege or user.privilege_label == privilege)
+            and (not pin_only or user.has_credential_data)
             and (
                 not needle or needle in user.user_id.lower() or needle in user.display_name.lower()
             )
         ]
+        if not self._users:
+            set_status(self._status, "Press “Read users from device” to load.", "info")
+        else:
+            admins = sum(1 for user in self._users if user.is_admin)
+            summary = (
+                f"{len(self._users)} user(s) on the device, {admins} with Admin privilege. "
+                "“PIN set” indicates the device's credential region is populated; "
+                "its contents are never read."
+            )
+            if len(self._visible) != len(self._users):
+                summary += f" Showing {len(self._visible)} matching."
+            elif not self._visible:
+                summary = "No users match the current search. Clear the search to see everyone."
+            set_status(self._status, summary, "info")
         fill_table(
             self._table,
             [
@@ -233,8 +285,28 @@ class UsersView(QWidget):
                 ]
                 for user in self._visible
             ],
+            empty_message=(
+                "No users loaded yet. Press “Read users from device”."
+                if not self._users
+                else "No users match these filters. Clear the search or change the privilege filter."
+            ),
         )
+        self._style_rows()
         self._update_buttons()
+
+    def _style_rows(self) -> None:
+        """Tint privilege and enrolment cells so admins and PIN state scan easily.
+
+        Colours come from the active theme, never from a literal, so the
+        indicators stay legible in dark mode.
+        """
+        for row in range(self._table.rowCount()):
+            privilege = self._table.item(row, 4)
+            if privilege is not None and privilege.text() == "Admin":
+                tint_cell(self._table, row, 4, "accent")
+            enrolled = self._table.item(row, 5)
+            if enrolled is not None and enrolled.text() == "Yes":
+                tint_cell(self._table, row, 5, "success")
 
     # -- writes ---------------------------------------------------------------
 
@@ -261,7 +333,7 @@ class UsersView(QWidget):
             return
 
         self._set_busy(True)
-        self._status.setText("Writing to the device and verifying…")
+        set_status(self._status, "Writing to the device and verifying…", "loading")
         run_off_thread(
             lambda: self._users_service.save_user(profile, draft, requester_role=self._role),
             on_success=self._on_saved,
@@ -274,25 +346,25 @@ class UsersView(QWidget):
 
         changes = describe_changes(user, draft)
         if not changes:
-            self._status.setText("Nothing to change.")
+            set_status(self._status, "Nothing to change.", "info")
             return False
 
         body = "\n".join(f"• {change}" for change in changes)
-        answer = QMessageBox.question(
+        return confirm(
             self,
             "Write to the device",
-            f"Write these changes to the clock?\n\n{body}\n\n"
-            "The record is read back and compared after writing.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+            f"Write these changes to the clock?\n\n{body}",
+            detail="The record is read back and compared after writing.",
+            confirm_label="Write to device",
+            destructive=True,
         )
-        return answer == QMessageBox.StandardButton.Yes
 
     def _on_saved(self, outcome: Any) -> None:
         self._set_busy(False)
         if not isinstance(outcome, UserWriteOutcome):  # pragma: no cover - defensive
             return
-        self._status.setText(outcome.summary)
+        set_status(self._status, outcome.summary, "success")
+        notify(self, outcome.summary)
         self.load()
 
     def _delete_user(self) -> None:
@@ -302,7 +374,7 @@ class UsersView(QWidget):
             return
 
         self._set_busy(True)
-        self._status.setText("Checking what deleting this user would affect…")
+        set_status(self._status, "Checking what deleting this user would affect…", "loading")
         device_uid = user.device_uid
         run_off_thread(
             lambda: self._users_service.describe_delete(profile, device_uid),
@@ -321,20 +393,19 @@ class UsersView(QWidget):
 
         # The impact was read live, so the operator confirms against the
         # device's current state rather than the possibly stale table.
-        answer = QMessageBox.warning(
+        if not confirm(
             self,
             "Delete user",
             impact.warning,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            self._status.setText("Deletion cancelled. Nothing was sent to the device.")
+            confirm_label="Delete user",
+            destructive=True,
+        ):
+            set_status(self._status, "Deletion cancelled. Nothing was sent to the device.", "info")
             return
 
         device_uid = impact.user.device_uid
         self._set_busy(True)
-        self._status.setText("Deleting and verifying…")
+        set_status(self._status, "Deleting and verifying…", "loading")
         run_off_thread(
             lambda: self._users_service.delete_user(
                 profile, device_uid, confirmed=True, requester_role=self._role
@@ -346,10 +417,13 @@ class UsersView(QWidget):
     def _on_deleted(self, deleted: Any) -> None:
         self._set_busy(False)
         if isinstance(deleted, DeviceUser):
-            self._status.setText(
+            set_status(
+                self._status,
                 f"Deleted {deleted.display_name} (user ID {deleted.user_id}). "
-                "Attendance history on the device was not removed."
+                "Attendance history on the device was not removed.",
+                "success",
             )
+            notify(self, f"Deleted {deleted.display_name}.")
         self.load()
 
     # -- shared ---------------------------------------------------------------
@@ -368,4 +442,4 @@ class UsersView(QWidget):
     def _on_failure(self, message: str) -> None:
         self._set_busy(False)
         self._load_button.setEnabled(True)
-        self._status.setText(message)
+        set_status(self._status, message, "error")

@@ -31,6 +31,8 @@ from clockmanager.domain.auth import Permission, Role, normalise_role
 from clockmanager.gui.views.common import (
     build_table,
     fill_table,
+    page_header,
+    primary_button,
     role_allows,
     run_off_thread,
     section_label,
@@ -107,7 +109,7 @@ class BackupView(QWidget):
         self._label = QLineEdit(self)
         self._label.setPlaceholderText("nightly")
         self._label.setText("manual")
-        self._create_button = QPushButton("Create backup now", self)
+        self._create_button = primary_button("Create backup now", self)
         self._create_button.clicked.connect(self._create)
 
         self._table = build_table(self._HEADERS, self)
@@ -140,6 +142,13 @@ class BackupView(QWidget):
         top.addWidget(self._create_button)
 
         layout = QVBoxLayout()
+        layout.addWidget(
+            page_header(
+                "Backup",
+                "A full copy of this computer's attendance database. "
+                "Restoring replaces everything stored here.",
+            )
+        )
         layout.addWidget(section_label("Offline status", self))
         layout.addWidget(self._offline_label)
         layout.addWidget(self._refresh_offline_button)
