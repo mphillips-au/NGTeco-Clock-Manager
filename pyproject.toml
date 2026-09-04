@@ -1,0 +1,106 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ngteco-clock-manager"
+version = "0.1.0"
+description = "Windows-first attendance management application for NGTeco NG-MB1 devices."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [{ name = "NGTeco Clock Manager Project" }]
+dependencies = [
+    "SQLAlchemy>=2.0,<3.0",
+    # Proven transport/command layer for ZKTeco-compatible devices. MB1-specific
+    # record parsing is owned by this application (see PROTOCOL.md), so pyzk is
+    # pinned: the adapter depends on its internal socket surface for live capture.
+    "pyzk==0.9",
+]
+
+[project.optional-dependencies]
+gui = [
+    "PySide6>=6.6,<7.0",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+clockmanager = "clockmanager.__main__:main"
+
+[project.gui-scripts]
+clockmanager-gui = "clockmanager.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+clockmanager = ["py.typed"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers -m 'not real_device'"
+markers = [
+    "gui: tests that require PySide6 and an offscreen Qt platform",
+    "real_device: opt-in tests that talk to a real NG-MB1 (never run by default)",
+]
+filterwarnings = ["error::DeprecationWarning:clockmanager.*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "N",   # pep8-naming
+    "SIM", # flake8-simplify
+    "TID", # flake8-tidy-imports
+    "DTZ", # flake8-datetimez: naive datetimes must be deliberate, not accidental
+    "RUF",
+]
+ignore = [
+    "E501",  # line length is enforced by the formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Only the GUI layer is permitted to import PySide6 (see ARCHITECTURE.md).
+"src/clockmanager/gui/*" = ["TID251"]
+"tests/test_layering.py" = ["TID251"]
+"tests/gui/*" = ["TID251"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"PySide6".msg = "The reusable core must not import PySide6; only clockmanager.gui may."
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src/clockmanager"]
+strict = true
+warn_unused_configs = true
+warn_unreachable = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+show_error_codes = true
+plugins = []
+
+[[tool.mypy.overrides]]
+module = ["PySide6.*", "zk.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["clockmanager.gui.*"]
+disallow_any_unimported = false

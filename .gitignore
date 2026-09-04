@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Environments
+.venv/
+venv/
+env/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local application data (databases, logs, configuration)
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.log
+local/
+instance/
+clockmanager.json
+
+# Never commit device credentials or raw protocol captures
+secrets/
+*.pcap
+*.captured

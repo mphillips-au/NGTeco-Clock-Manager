@@ -1,0 +1,10 @@
+# Normalise line endings in the repository.
+# The project is Windows-first but targets a Linux/Synology service later, so
+# text files are stored with LF and checked out natively.
+* text=auto eol=lf
+
+# Binary files must never be normalised.
+*.png binary
+*.ico binary
+*.pdf binary
+*.sqlite3 binary
