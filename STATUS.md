@@ -2,11 +2,11 @@
 
 ## Current phase
 
-PHASE 05 — Employees / timesheets / payroll: **complete**.
+PHASE 06 — Reports / exports: **complete**.
 
 ## Next phase
 
-PHASE 06 — Reports / exports.
+PHASE 07 — Roles / audit.
 
 ## What exists now
 
@@ -35,12 +35,16 @@ Layer separation is in place and enforced by tests:
   (`historical`/`manual`/`live`/`background`/`recovery`) vocabulary
 - `clockmanager.services` — `bootstrap()`, `ApplicationContext`,
   `ApplicationStatus`, `DeviceService`, `UserService`, `AuditService`,
-  `SyncService`, `EmployeeService`, `TimesheetService`, `MockDeviceFactory`
+  `SyncService`, `EmployeeService`, `TimesheetService`, `ReportService`,
+  `MockDeviceFactory`
+- `clockmanager.domain.reports` — `ReportType` (8 kinds), `ReportFilter`,
+  `Report`, `ExportFormat` (CSV/XLSX/PDF/JSON) plus dependency-free
+  XLSX/PDF renderers; every export audited as `report.export`
 - `clockmanager.security` — redaction helpers
 - `clockmanager.diagnostics` — structured JSON logging with a redacting filter
   on every handler
 - `clockmanager.gui` — PySide6 application: navigation shell plus Dashboard,
-  Users, Attendance, Live events, Employees, Timesheets, Device settings,
+  Users, Attendance, Live events, Employees, Timesheets, Reports, Device settings,
   Audit log and Diagnostics
   views; the only subpackage allowed to import PySide6
 
@@ -182,7 +186,9 @@ Known device:
   view works offline. Nothing has been run against the real NG-MB1 yet — the
   sync is proven against fixtures, the fake transport and the mock device
   only.
-- Reports and exports do not exist. Windows
+- Reports and exports are derived read-only views (PHASE 06); raw
+  attendance, sync history and audit rows are never mutated by building or
+  exporting. Windows
   packaging/installer is not started (PHASE 13).
 - SQLite returns naive datetimes on read. `received_at` is normalised to
   aware UTC on read (`as_aware_utc`); `occurred_at` stays naive deliberately
@@ -215,6 +221,18 @@ worked time, missing/duplicate/excessive/overnight flags and overtime.
 Naive device-local times are interpreted as wall time in the schedule's
 timezone; durations are real elapsed time measured in UTC, so DST
 transitions total correctly.
+
+## Reports / exports (PHASE 06)
+
+Eight derived reports over immutable data: daily attendance, employee
+timesheet, weekly summary, pay-period summary, exceptions
+(missing/duplicate/excessive/overnight/unknown punch, using the same
+pairing rules as timesheets), device activity, sync history and audit
+trail. Filters: date range, employee, user ID, device, department,
+punch/status, exceptions-only. Exports to CSV, XLSX, PDF and JSON use
+dependency-free renderers and are audited as `report.export`. Schema
+still version 5: reports add no tables. Verified against SQLite and the
+mock context; no real-device run.
 
 ## Protocol discoveries
 

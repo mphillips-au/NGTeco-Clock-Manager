@@ -103,6 +103,30 @@ class AuditRepository:
         )
         return list(self._session.execute(statement).scalars().all())
 
+    def list_filtered(
+        self,
+        *,
+        action: str | None = None,
+        outcome: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 1000,
+    ) -> list[AuditEventRecord]:
+        """Filtered audit entries, newest first. Read-only."""
+        statement = select(AuditEventRecord)
+        if action:
+            statement = statement.where(AuditEventRecord.action == action)
+        if outcome:
+            statement = statement.where(AuditEventRecord.outcome == outcome)
+        if since is not None:
+            statement = statement.where(AuditEventRecord.occurred_at >= since)
+        if until is not None:
+            statement = statement.where(AuditEventRecord.occurred_at <= until)
+        statement = statement.order_by(
+            AuditEventRecord.occurred_at.desc(), AuditEventRecord.id.desc()
+        ).limit(limit)
+        return list(self._session.execute(statement).scalars().all())
+
     def count(self) -> int:
         statement = select(func.count()).select_from(AuditEventRecord)
         return int(self._session.execute(statement).scalar_one())
@@ -273,6 +297,36 @@ class AttendanceRepository:
         )
         return list(self._session.execute(statement).scalars().all())
 
+    def list_in_range(
+        self,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        device_id: int | None = None,
+        user_ids: list[str] | None = None,
+        punch: int | None = None,
+        status: int | None = None,
+        limit: int = 5000,
+    ) -> list[AttendanceEventRecord]:
+        """Filtered stored punches, oldest first. Read-only; rows are never modified."""
+        statement = select(AttendanceEventRecord)
+        if start is not None:
+            statement = statement.where(AttendanceEventRecord.occurred_at >= start)
+        if end is not None:
+            statement = statement.where(AttendanceEventRecord.occurred_at <= end)
+        if device_id is not None:
+            statement = statement.where(AttendanceEventRecord.device_id == device_id)
+        if user_ids:
+            statement = statement.where(AttendanceEventRecord.user_id.in_(user_ids))
+        if punch is not None:
+            statement = statement.where(AttendanceEventRecord.punch == punch)
+        if status is not None:
+            statement = statement.where(AttendanceEventRecord.status == status)
+        statement = statement.order_by(
+            AttendanceEventRecord.occurred_at, AttendanceEventRecord.id
+        ).limit(limit)
+        return list(self._session.execute(statement).scalars().all())
+
 
 class EmployeeRepository:
     """Business-level employees plus their per-device user-ID mappings."""
@@ -382,6 +436,27 @@ class SyncHistoryRepository:
             .order_by(SyncHistoryRecord.started_at.desc(), SyncHistoryRecord.id.desc())
             .limit(limit)
         )
+        return list(self._session.execute(statement).scalars().all())
+
+    def list_filtered(
+        self,
+        *,
+        device_id: int | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 500,
+    ) -> list[SyncHistoryRecord]:
+        """Filtered sync runs, newest first. Read-only."""
+        statement = select(SyncHistoryRecord)
+        if device_id is not None:
+            statement = statement.where(SyncHistoryRecord.device_id == device_id)
+        if since is not None:
+            statement = statement.where(SyncHistoryRecord.started_at >= since)
+        if until is not None:
+            statement = statement.where(SyncHistoryRecord.started_at <= until)
+        statement = statement.order_by(
+            SyncHistoryRecord.started_at.desc(), SyncHistoryRecord.id.desc()
+        ).limit(limit)
         return list(self._session.execute(statement).scalars().all())
 
     def recent_for_device(self, device_id: int, *, limit: int = 50) -> list[SyncHistoryRecord]:

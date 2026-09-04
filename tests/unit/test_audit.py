@@ -98,7 +98,7 @@ def test_the_repository_offers_no_way_to_edit_or_remove_entries() -> None:
     from clockmanager.persistence.repositories import AuditRepository
 
     public = {name for name in dir(AuditRepository) if not name.startswith("_")}
-    assert public == {"add", "recent", "count"}
+    assert public == {"add", "recent", "count", "list_filtered"}
 
 
 def test_audit_rows_survive_removing_the_device(context: ApplicationContext) -> None:

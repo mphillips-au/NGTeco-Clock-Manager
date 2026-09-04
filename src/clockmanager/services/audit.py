@@ -45,6 +45,7 @@ class AuditAction(StrEnum):
     EMPLOYEE_DEACTIVATE = "employee.deactivate"
     EMPLOYEE_REACTIVATE = "employee.reactivate"
     EMPLOYEE_LINK = "employee.link"
+    REPORT_EXPORT = "report.export"
 
 
 class AuditOutcome(StrEnum):

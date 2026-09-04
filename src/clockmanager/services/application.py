@@ -35,6 +35,7 @@ from clockmanager.services.devices import (
     build_device,
 )
 from clockmanager.services.employees import EmployeeService
+from clockmanager.services.reports import ReportService
 from clockmanager.services.sync import SyncService
 from clockmanager.services.timesheets import TimesheetService
 from clockmanager.services.users import UserService
@@ -140,6 +141,11 @@ class ApplicationContext:
     def timesheets(self) -> TimesheetService:
         """Derived timesheets over immutable attendance (PHASE 05)."""
         return TimesheetService(self.database, self.employees)
+
+    @property
+    def reports(self) -> ReportService:
+        """Derived reports and exports over immutable data (PHASE 06)."""
+        return ReportService(self.database, self.employees, self.timesheets, self.audit)
 
     def status(self) -> ApplicationStatus:
         """Collect a display-ready status snapshot."""
