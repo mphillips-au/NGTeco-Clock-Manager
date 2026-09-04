@@ -42,6 +42,7 @@ from clockmanager.gui.views import (
     EmployeesView,
     LiveEventsView,
     ReportsView,
+    SettingsView,
     TimesheetsView,
     UserAccountsView,
     UsersView,
@@ -55,14 +56,17 @@ _logger = get_logger(__name__)
 
 #: Views every logged-in role may see. Reads need no permission; everything a
 #: role may not do is disabled inside the view or refused by the service.
+#: Settings is here for every role: its own sections are role-filtered, so a
+#: viewer opens it and finds appearance and read-only pay rules, nothing more.
 _VIEWER_VIEWS: frozenset[str] = frozenset(
-    {"Dashboard", "Users", "Attendance", "Employees", "Timesheets", "Reports"}
+    {"Dashboard", "Users", "Attendance", "Employees", "Timesheets", "Reports", "Settings"}
 )
 #: Office staff additionally run live capture and read the audit log.
 _OFFICE_VIEWS: frozenset[str] = _VIEWER_VIEWS | {"Live events", "Audit log"}
-#: The eleven pre-PHASE-07 views, in navigation order. Backup is
-#: administrator-only (it holds the full database copy); office staff and
-#: viewers never see it.
+#: Every view, in navigation order. Device settings, diagnostics and account
+#: administration are sections inside Settings rather than navigation entries
+#: of their own. Backup stays separate: restoring a database is an operational
+#: task, not a setting, and it is administrator-only (it holds the full copy).
 _LEGACY_VIEWS: tuple[str, ...] = (
     "Dashboard",
     "Users",
@@ -71,10 +75,9 @@ _LEGACY_VIEWS: tuple[str, ...] = (
     "Employees",
     "Timesheets",
     "Reports",
-    "Device settings",
     "Audit log",
-    "Diagnostics",
     "Backup",
+    "Settings",
 )
 
 
@@ -87,7 +90,7 @@ def visible_views_for(role: Role | None) -> frozenset[str]:
     if role is None:
         return frozenset(_LEGACY_VIEWS)
     if role == Role.ADMIN:
-        return frozenset(_LEGACY_VIEWS) | {"User accounts"}
+        return frozenset(_LEGACY_VIEWS)
     if role == Role.OFFICE_STAFF:
         return _OFFICE_VIEWS
     return _VIEWER_VIEWS
@@ -142,6 +145,18 @@ class MainWindow(QMainWindow):
         if current_user is not None and self._role == Role.ADMIN:
             self.accounts_view = UserAccountsView(context.auth, current_user, self)
 
+        # Device settings, diagnostics and account administration are hosted
+        # by Settings. They are still built as views and still enforce their
+        # own permissions; the hub only decides which sections it shows.
+        self.settings_view = SettingsView(
+            context,
+            device_settings=self.device_settings_view,
+            diagnostics=self.diagnostics_view,
+            accounts=self.accounts_view,
+            parent=self,
+            role=role,
+        )
+
         all_entries = [
             _NavigationEntry("Dashboard", self.dashboard_view),
             _NavigationEntry("Users", self.users_view),
@@ -150,13 +165,10 @@ class MainWindow(QMainWindow):
             _NavigationEntry("Employees", self.employees_view),
             _NavigationEntry("Timesheets", self.timesheets_view),
             _NavigationEntry("Reports", self.reports_view),
-            _NavigationEntry("Device settings", self.device_settings_view),
             _NavigationEntry("Audit log", self.audit_view),
-            _NavigationEntry("Diagnostics", self.diagnostics_view),
             _NavigationEntry("Backup", self.backup_view),
+            _NavigationEntry("Settings", self.settings_view),
         ]
-        if self.accounts_view is not None:
-            all_entries.append(_NavigationEntry("User accounts", self.accounts_view))
 
         # Hidden restricted screens (PHASE 07): a role that may not see a
         # view gets no navigation entry and no menu item for it. The widget
@@ -316,6 +328,20 @@ class MainWindow(QMainWindow):
             colour = palette.accent_text if row == current else palette.text_muted
             item.setIcon(nav_icon(entry.label, colour))
 
+    def show_settings_section(self, section: str) -> None:
+        """Open Settings at one section, when this role has that section."""
+        self.show_view("Settings")
+        if not self.settings_view.show_section(section):
+            self.statusBar().showMessage(f"{section} settings are not available for your role.")
+
+    def repaint_theme_artwork(self) -> None:
+        """Redraw painted artwork after a theme change made elsewhere.
+
+        Settings has an appearance control, and painted icons carry no
+        stylesheet, so the window redraws them when asked.
+        """
+        self._repaint_navigation_icons()
+
     def _on_navigate(self, row: int) -> None:
         if not 0 <= row < len(self._entries):
             return
@@ -337,25 +363,26 @@ class MainWindow(QMainWindow):
             self.timesheets_view.load_employees()
         elif entry.widget is self.reports_view:
             self.reports_view.load_employees()
-        elif entry.widget is self.device_settings_view:
+        elif entry.widget is self.backup_view:
+            self.backup_view.load()
+        elif entry.widget is self.settings_view:
+            # The hub's sections read stored state, so refresh what it hosts.
+            self.settings_view.load()
             self.device_settings_view.refresh()
-        elif entry.widget is self.diagnostics_view:
             self.diagnostics_view.set_live_capture_state(
                 "Running" if self.live_view.is_capturing else "Not running"
             )
-        elif entry.widget is self.backup_view:
-            self.backup_view.load()
-        elif self.accounts_view is not None and entry.widget is self.accounts_view:
-            self.accounts_view.load()
+            if self.accounts_view is not None:
+                self.accounts_view.load()
 
     # -- menus ----------------------------------------------------------------
 
     def _build_menus(self) -> None:
         labels = {entry.label for entry in self._entries}
         file_menu = self.menuBar().addMenu("&File")
-        if "Device settings" in labels:
-            settings_action = file_menu.addAction("&Device settings")
-            settings_action.triggered.connect(lambda: self.show_view("Device settings"))
+        if "Settings" in labels:
+            settings_action = file_menu.addAction("&Settings")
+            settings_action.triggered.connect(lambda: self.show_view("Settings"))
             file_menu.addSeparator()
         if self._current_user is not None:
             logout_action = file_menu.addAction("&Logout")
@@ -391,6 +418,8 @@ class MainWindow(QMainWindow):
         # The pre-login/test path (no identity) keeps the legacy gate.
         if self._context.config.developer_mode and (self._role is None or self._role == Role.ADMIN):
             developer_menu = self.menuBar().addMenu("&Developer")
+            developer_action = developer_menu.addAction("Developer &settings")
+            developer_action.triggered.connect(lambda: self.show_settings_section("Developer"))
             schema_action = developer_menu.addAction("Database &metadata")
             schema_action.triggered.connect(self._show_schema_info)
 

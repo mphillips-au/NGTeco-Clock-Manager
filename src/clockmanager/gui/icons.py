@@ -136,6 +136,18 @@ def _shield(p: QPainter) -> None:
     p.drawPolyline(QPolygonF([QPointF(9, 12), QPointF(11.3, 14.5), QPointF(15.5, 9.8)]))
 
 
+def _gear(p: QPainter) -> None:
+    p.drawEllipse(QPointF(12, 12), 3.4, 3.4)
+    p.drawEllipse(QPointF(12, 12), 7.6, 7.6)
+    for x1, y1, x2, y2 in (
+        (12, 2.2, 12, 5),
+        (12, 19, 12, 21.8),
+        (2.2, 12, 5, 12),
+        (19, 12, 21.8, 12),
+    ):
+        p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+
+
 #: Navigation label → drawing. A label missing here simply gets no icon.
 _ICONS: dict[str, Callable[[QPainter], None]] = {
     "Dashboard": _home,
@@ -150,6 +162,7 @@ _ICONS: dict[str, Callable[[QPainter], None]] = {
     "Diagnostics": _tools,
     "Backup": _archive,
     "User accounts": _shield,
+    "Settings": _gear,
 }
 
 

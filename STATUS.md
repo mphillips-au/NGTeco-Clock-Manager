@@ -2,8 +2,10 @@
 
 ## Current phase
 
-PHASE 12 — UI polish: **complete**. Presentation only; no service, protocol,
-persistence or permission behaviour changed.
+PHASE 13 — Settings hub: **complete**. Device settings, diagnostics and
+account administration are now sections of one role-filtered Settings screen,
+alongside General, Payroll and Security. One new permission
+(`MANAGE_PAYROLL`, administrator-only) gates pay-schedule changes.
 
 ## Next phase
 
@@ -68,7 +70,13 @@ Layer separation is in place and enforced by tests:
   read-only discovery (check one address, scan the LAN, register by name);
   Backup (admin-only) creates/previews/restores backups and shows offline status.
   Diagnostics (admin-only) runs timed connection reports, full protocol traces
-  with redacted raw detail, and sanitized JSON exports.
+  with redacted raw detail, and sanitized JSON exports. Device settings,
+  Diagnostics and User accounts are reached through the Settings hub
+  (`views/settings.py`), which shows General, Device, Payroll, Security and
+  Developer sections filtered by role: office staff and viewers get General
+  and a read-only Payroll only. Payroll surfaces the pay-schedule
+  administration `TimesheetService` already had, gated by
+  `Permission.MANAGE_PAYROLL` (administrators only).
 
 Entry point `clockmanager` starts the GUI; `clockmanager --headless` runs the
 same bootstrap without importing PySide6.

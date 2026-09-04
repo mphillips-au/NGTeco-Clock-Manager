@@ -63,6 +63,11 @@ class Permission(StrEnum):
     VIEW_DIAGNOSTICS = "diagnostics.view"
     #: Create, update, (de)activate and map employees.
     MANAGE_EMPLOYEES = "employees.manage"
+    #: Change pay schedules and timesheet rules. Separate from
+    #: ``MANAGE_EMPLOYEES`` on purpose: office staff maintain the people,
+    #: but overtime thresholds and pay periods decide what is owed, so only
+    #: an administrator may change them.
+    MANAGE_PAYROLL = "payroll.manage"
     #: Run attendance sync (manual or recovery) against a device.
     SYNC_ATTENDANCE = "attendance.sync"
     #: Run live capture and store its punches.
@@ -84,6 +89,7 @@ ROLE_PERMISSIONS: Final[dict[Role, frozenset[Permission]]] = {
             Permission.MANAGE_DEVICE_USERS,
             Permission.VIEW_DIAGNOSTICS,
             Permission.MANAGE_EMPLOYEES,
+            Permission.MANAGE_PAYROLL,
             Permission.SYNC_ATTENDANCE,
             Permission.LIVE_CAPTURE,
             Permission.VIEW_AUDIT,
