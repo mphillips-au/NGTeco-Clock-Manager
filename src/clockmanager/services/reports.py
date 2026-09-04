@@ -15,6 +15,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, time, timedelta
 
 from clockmanager.diagnostics.logging_setup import get_logger
+from clockmanager.domain.auth import Permission, Role, require
 from clockmanager.domain.models import describe_punch
 from clockmanager.domain.payroll import (
     PayPeriod,
@@ -480,9 +481,21 @@ class ReportService:
     # -- exports ------------------------------------------------------------------
 
     def export(
-        self, report: Report, fmt: ExportFormat, *, audit_detail: str = ""
+        self,
+        report: Report,
+        fmt: ExportFormat,
+        *,
+        audit_detail: str = "",
+        requester_role: Role | str | None = None,
     ) -> tuple[bytes, str, str]:
-        """Export a report and audit the export. Never mutates raw data."""
+        """Export a report and audit the export. Never mutates raw data.
+
+        ``requester_role`` enforces PHASE 07 roles. Every role holds the
+        export permission (an export changes nothing but its own audit row);
+        ``None`` keeps the legacy path for callers without an identity.
+        """
+        if requester_role is not None:
+            require(requester_role, Permission.EXPORT_REPORTS)
         data, suffix, mime = export_report(report, fmt)
         safe_title = "".join(
             ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in report.report_type.value

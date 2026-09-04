@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from clockmanager.domain.auth import Role, normalise_role
 from clockmanager.domain.reports import ExportFormat, Report, ReportFilter, ReportType
 from clockmanager.gui.views.common import build_table, fill_table, run_off_thread, section_label
 from clockmanager.services.employees import EmployeeService
@@ -52,10 +53,16 @@ class ReportsView(QWidget):
         employees: EmployeeService,
         reports: ReportService,
         parent: QWidget | None = None,
+        *,
+        role: Role | str | None = None,
     ) -> None:
         super().__init__(parent)
         self._employees = employees
         self._reports = reports
+        #: The logged-in role, carried into exports for the audit trail.
+        #: Every role may export (it mutates nothing); ``None`` keeps the
+        #: legacy behaviour for tests.
+        self._role = normalise_role(role) if role is not None else None
         self._report: Report | None = None
         self._employee_ids: list[int] = []
 
@@ -203,7 +210,7 @@ class ReportsView(QWidget):
                 return self._reports.audit_report(filt)
 
     def _do_export(self, report: Report, fmt: ExportFormat, path: str) -> str:
-        data, filename, _mime = self._reports.export(report, fmt)
+        data, filename, _mime = self._reports.export(report, fmt, requester_role=self._role)
         target = Path(path)
         target.write_bytes(data)
         return f"Exported {len(data)} byte(s) to {target.name or filename}."

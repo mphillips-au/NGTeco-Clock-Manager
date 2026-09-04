@@ -34,6 +34,7 @@ EXPECTED_TABLES = {
     "attendance_events",
     "audit_events",
     "sync_history",
+    "app_users",
 }
 
 
@@ -187,10 +188,15 @@ def test_attendance_preserves_raw_punch_and_status(database) -> None:  # type: i
         assert stored.status == 7
 
 
-#: The one sensitive column the schema is allowed to hold: the operator-set
-#: device communication password, required to reconnect to a device. It is NOT
-#: user credential data. Any other match is a defect.
-ALLOWED_SENSITIVE_COLUMNS = {("devices", "communication_password")}
+#: Sensitive columns the schema is allowed to hold. The operator-set device
+#: communication password is required to reconnect to a device; the salted
+#: application-login hash is required to verify local accounts. Neither is
+#: user credential data (no PIN, card or biometric is persisted), and neither
+#: may ever be logged or exported. Any other match is a defect.
+ALLOWED_SENSITIVE_COLUMNS = {
+    ("devices", "communication_password"),
+    ("app_users", "password_hash"),
+}
 
 
 def test_no_user_credential_columns_exist(database) -> None:  # type: ignore[no-untyped-def]

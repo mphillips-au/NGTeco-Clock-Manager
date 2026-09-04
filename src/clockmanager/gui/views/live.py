@@ -18,8 +18,15 @@ from PySide6.QtWidgets import (
 )
 
 from clockmanager.diagnostics.logging_setup import get_logger
+from clockmanager.domain.auth import Permission, Role, normalise_role
 from clockmanager.domain.models import AttendanceEvent
-from clockmanager.gui.views.common import build_table, fill_table, run_off_thread, section_label
+from clockmanager.gui.views.common import (
+    build_table,
+    fill_table,
+    role_allows,
+    run_off_thread,
+    section_label,
+)
 from clockmanager.gui.workers import LiveCaptureWorker
 from clockmanager.services.devices import DeviceService
 from clockmanager.services.sync import SyncService
@@ -40,10 +47,15 @@ class LiveEventsView(QWidget):
         service: DeviceService,
         sync: SyncService,
         parent: QWidget | None = None,
+        *,
+        role: Role | str | None = None,
     ) -> None:
         super().__init__(parent)
         self._service = service
         self._sync = sync
+        #: The logged-in role. Viewers never reach this view (it is hidden
+        #: for them); ``None`` keeps the legacy behaviour for tests.
+        self._role = normalise_role(role) if role is not None else None
         self._worker: LiveCaptureWorker | None = None
         self._rows: list[list[str]] = []
         self._sequence = 0
@@ -53,6 +65,12 @@ class LiveEventsView(QWidget):
 
         self._start_button = QPushButton("Start live capture", self)
         self._start_button.clicked.connect(self.start)
+        if not role_allows(self._role, Permission.LIVE_CAPTURE):
+            self._start_button.setEnabled(False)
+            self._start_button.setToolTip(
+                "Your role is read-only. Only office staff and "
+                "administrators may capture live events."
+            )
         self._stop_button = QPushButton("Stop", self)
         self._stop_button.clicked.connect(self.stop)
         self._stop_button.setEnabled(False)
@@ -174,7 +192,9 @@ class LiveEventsView(QWidget):
             return False
         names = dict(self._names)
         run_off_thread(
-            lambda: self._sync.record_live_events(profile, [event], users_by_id=names),
+            lambda: self._sync.record_live_events(
+                profile, [event], users_by_id=names, requester_role=self._role
+            ),
             on_success=lambda _count: None,
             on_failure=lambda message: _logger.warning(
                 "Could not store a live event", extra={"error": message}
@@ -190,7 +210,7 @@ class LiveEventsView(QWidget):
 
     def _on_finished(self) -> None:
         self._worker = None
-        self._start_button.setEnabled(True)
+        self._start_button.setEnabled(role_allows(self._role, Permission.LIVE_CAPTURE))
         self._stop_button.setEnabled(False)
 
     def _clear(self) -> None:

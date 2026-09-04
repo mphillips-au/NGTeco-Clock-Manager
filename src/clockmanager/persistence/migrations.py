@@ -276,6 +276,43 @@ def _migrate_to_5(connection: Connection) -> None:
     )
 
 
+def _migrate_to_6(connection: Connection) -> None:
+    """Add the PHASE 07 local-account ``app_users`` table.
+
+    Additive only: no existing table is touched. ``IF NOT EXISTS`` keeps the
+    migration resumable after an interruption. The table holds a salted
+    password hash, never a password (``SECURITY.md``).
+    """
+    connection.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS app_users (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                username VARCHAR(64) NOT NULL,
+                display_name VARCHAR(120) NOT NULL DEFAULT '',
+                role VARCHAR(32) NOT NULL DEFAULT 'viewer',
+                password_hash VARCHAR(256) NOT NULL,
+                is_active BOOLEAN NOT NULL DEFAULT 1,
+                last_login_at DATETIME,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                CONSTRAINT uq_app_users_username UNIQUE (username)
+            )
+            """
+        )
+    )
+
+
+def _migrate_to_7(connection: Connection) -> None:
+    """Add the PHASE 08 ``devices.last_seen_at`` column.
+
+    Additive only: existing rows keep their data and read ``None`` (never
+    seen) until the next successful connection. Resumable via
+    ``_add_column_if_missing``.
+    """
+    _add_column_if_missing(connection, "devices", "last_seen_at", "DATETIME")
+
+
 def _parse_stored_datetime(value: str) -> datetime:
     """Parse a SQLite-stored datetime string back into a datetime."""
     from datetime import datetime as _datetime
@@ -317,6 +354,16 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=5,
         description="Add employees, employee_device_links and pay_schedules (PHASE 05)",
         apply=_migrate_to_5,
+    ),
+    Migration(
+        version=6,
+        description="Add app_users local accounts (PHASE 07)",
+        apply=_migrate_to_6,
+    ),
+    Migration(
+        version=7,
+        description="Add devices.last_seen_at (PHASE 08)",
+        apply=_migrate_to_7,
     ),
 )
 

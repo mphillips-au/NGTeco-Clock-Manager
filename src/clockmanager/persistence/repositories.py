@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from clockmanager.domain.models import DeviceIdentity
 from clockmanager.persistence.models import (
+    AppUserRecord,
     AttendanceEventRecord,
     AuditEventRecord,
     DeviceRecord,
@@ -28,6 +29,7 @@ from clockmanager.persistence.models import (
 )
 
 __all__ = [
+    "AppUserRepository",
     "AttendanceRepository",
     "AuditRepository",
     "DeviceRepository",
@@ -77,6 +79,50 @@ class DeviceRepository:
             platform=record.platform,
             firmware_version=record.firmware_version,
         )
+
+
+class AppUserRepository:
+    """Local application accounts (PHASE 07).
+
+    Plain CRUD over ``app_users``. Password policy, hashing and role checks
+    live in :mod:`clockmanager.services.auth`, not here: the repository
+    never sees a plaintext password.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def list_all(self) -> list[AppUserRecord]:
+        statement = select(AppUserRecord).order_by(AppUserRecord.username)
+        return list(self._session.execute(statement).scalars().all())
+
+    def get(self, user_id: int) -> AppUserRecord | None:
+        return self._session.get(AppUserRecord, user_id)
+
+    def get_by_username(self, username: str) -> AppUserRecord | None:
+        """Find an account by username, case-insensitively."""
+        statement = select(AppUserRecord).where(
+            func.lower(AppUserRecord.username) == username.strip().lower()
+        )
+        return self._session.execute(statement).scalar_one_or_none()
+
+    def add(self, record: AppUserRecord) -> AppUserRecord:
+        self._session.add(record)
+        self._session.flush()
+        return record
+
+    def count(self) -> int:
+        statement = select(func.count()).select_from(AppUserRecord)
+        return int(self._session.execute(statement).scalar_one())
+
+    def count_active_admins(self) -> int:
+        """Active accounts carrying the admin role (last-admin guard)."""
+        statement = (
+            select(func.count())
+            .select_from(AppUserRecord)
+            .where(AppUserRecord.role == "admin", AppUserRecord.is_active.is_(True))
+        )
+        return int(self._session.execute(statement).scalar_one())
 
 
 class AuditRepository:

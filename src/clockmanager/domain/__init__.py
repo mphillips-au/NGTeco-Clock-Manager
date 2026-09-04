@@ -5,6 +5,13 @@ This layer is pure Python: no PySide6, no SQLAlchemy, no sockets.
 
 from __future__ import annotations
 
+from clockmanager.domain.auth import (
+    Permission,
+    Role,
+    can,
+    normalise_role,
+    require,
+)
 from clockmanager.domain.models import (
     AttendanceEvent,
     DeviceIdentity,
@@ -59,24 +66,29 @@ __all__ = [
     "PaySchedule",
     "PayScheduleType",
     "PeriodSummary",
+    "Permission",
     "Privilege",
     "PunchDirection",
     "PunchInput",
     "Report",
     "ReportFilter",
     "ReportType",
+    "Role",
     "Timesheet",
     "TimesheetRules",
     "UserChange",
     "UserDraft",
     "UserWriteOutcome",
     "build_timesheet",
+    "can",
     "describe_changes",
     "describe_privilege",
     "describe_punch",
     "export_report",
     "format_hours",
     "interpret_naive",
+    "normalise_role",
     "pay_period_for",
     "pay_periods_between",
+    "require",
 ]

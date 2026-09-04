@@ -2,6 +2,173 @@
 
 ## Unreleased
 
+### PHASE 09 — Backup / Offline Resilience (2026-09-04)
+
+Recoverable, still useful with the clock down. Verified against SQLite and
+the mock context; no real-device run.
+
+#### Services (`BackupService`, via `context.backups`, PySide6-free)
+
+- `create_backup(label)`: one zip with a full database copy (SQLite
+  online-backup API), `config.json`, portable exports (employees CSV/JSON,
+  device-users JSON, attendance CSV, audit CSV, sync history JSON) and a
+  manifest with counts plus a sensitive-content note. Audited as
+  `backup.create` (new `AuditAction`s `backup.create` / `backup.restore`).
+- `preview_backup(path)`: read-only validation — refuses non-zips, missing
+  files, bad manifests and newer schemas — and describes what a restore
+  would do without changing anything.
+- `restore_backup(path, confirmed=True)`: requires an explicit confirmation
+  (refused otherwise), takes an automatic `pre-restore` safety backup,
+  copies the backup database into the live store, migrates older schemas
+  forward, restores configuration, and audits the restore in the restored
+  database. A restored database is proven fully usable (reads, syncs, new
+  writes).
+- `offline_report()`: per-device stored counts, last-seen and last sync
+  from local reads only — the Offline status in the GUI.
+- Administrator-only when a role is passed (`MANAGE_DEVICE_SETTINGS`):
+  the zip holds the full database copy including stored device connection
+  secrets. Portable exports never contain a communication password, PIN,
+  card or biometric value (exact exported keys pinned by tests).
+
+#### GUI
+
+- New admin-only Backup view (hidden from office staff and viewers):
+  offline status, labelled "Create backup now", backup table, select to
+  preview, and Restore behind a confirmation dialog that shows the preview
+  and requires an explicit "I understand" check. Unconfirmed restores
+  change nothing. All work off the UI thread; navigation grows to eleven
+  views (twelve for admins with User accounts).
+
+#### Tests
+
+- 20 new service tests: complete bundle contents, manifest counts, audit
+  entries, no-secret exports, newest-first listing, disabled-device skip,
+  preview validity/invalidity/newer-schema refusal/preview-changes-nothing,
+  confirmation gate, full restore round-trip, safety backup, invalid-restore
+  refusal, restored-database usability, offline reporting; plus 6 GUI tests
+  (offline load, create/list, preview select, cancelled restore,
+  confirmed-restore recovery, non-admin lock).
+
+### PHASE 08 — Device Management / Discovery (2026-09-04)
+
+Multi-device records with local observation state, plus read-only LAN
+discovery that can never configure anything on its own. Verified against
+SQLite, loopback sockets and the mock context; no real-device run.
+
+#### Persistence (schema version 7)
+
+- `devices.last_seen_at`: last successful contact, stamped by connection
+  tests and successful syncs, `None` until a device answers. Forward-only
+  migration 7, additive and resumable; v1-upgrade and preservation tests.
+
+#### Protocol (`clockmanager.protocol.discovery`, PySide6-free)
+
+- `probe_tcp` (TCP reachability only, no command sent), `hosts_from_cidr`
+  (refuses ranges over 1024 addresses), `local_subnet_hosts`
+  (best-effort, never raises), `scan_hosts` (parallel, input order kept),
+  `identify_device` (connect, read snapshot, always disconnect — no write
+  operation exists in the module, pinned by an AST test).
+- Discovered devices carry identity only; nothing is stored, modified or
+  deleted by any discovery function.
+
+#### Services
+
+- `DeviceService`: `record_last_seen` / `mark_seen`, `status` /
+  `statuses` (last-seen plus stored counts and sync history, local reads
+  only), `register_discovered` (the only discovery-to-profile path:
+  operator-supplied name, duplicate-name and duplicate-address refusal,
+  admin-gated, writes locally only), plus `probe_host` / `scan_network` /
+  `identify` wrappers so the GUI never imports the protocol layer.
+- Successful syncs stamp last-seen, so the status line reflects real contact.
+
+#### GUI
+
+- Device settings view shows last-seen/sync state for the selected profile
+  and gains a read-only discovery group: check one address, scan the local
+  network, select a result and register it with a name. Registration of an
+  already-stored address is refused with a pointer to the existing profile.
+
+#### Tests
+
+- 18 discovery tests (loopback probe, CIDR expansion/limits, scan order and
+  de-duplication, identify without writes with disconnect-on-failure, the
+  no-write AST guard), 18 device-management tests (stamps, statuses,
+  registration rules, migration 7), 6 GUI tests (state label, check without
+  storing, explicit register, duplicate refusal, empty-LAN scan, canned
+  scan select-and-register).
+
+### PHASE 07 — Authentication / Roles / Audit (2026-09-04)
+
+Local accounts and three roles separating admin/office access. Verified
+against SQLite and the mock context; no real-device run.
+
+#### Domain (`clockmanager.domain.auth`, PySide6-free)
+
+- `Role` (`admin` / `office_staff` / `viewer`), `Permission` (accounts,
+  device settings, device users, diagnostics, employees, sync, live,
+  audit view, exports) and `ROLE_PERMISSIONS`: the one matrix both the
+  service layer (refuse) and the GUI (hide/disable) decide from.
+- `can` / `require` (`SecurityError`, no sensitive content in messages);
+  reads need no permission — every role views dashboard, users,
+  attendance, employees, timesheets and reports.
+
+#### Security (`clockmanager.security.passwords`, stdlib only)
+
+- Salted PBKDF2-HMAC-SHA256 (`pbkdf2-sha256$iterations$salt$hash`,
+  210k iterations, 16-byte salt), constant-time verify, username/password
+  validation. Plaintext exists only for one hash/verify call; hashes are
+  excluded from `repr` and redacted like any password-named value.
+
+#### Persistence (schema version 6)
+
+- New `app_users` table (username unique, display name, role, salted hash,
+  active flag, last login). Forward-only migration 6, additive and
+  resumable; v1-upgrade tests plus the sensitive-column guard now allows
+  `app_users.password_hash` alongside the device communication password,
+  documented in `SECURITY.md`.
+- New `AppUserRepository` (case-insensitive lookup, active-admin count
+  for the last-admin guard).
+
+#### Services (`AuthService`, via `context.auth`)
+
+- First-run `bootstrap_admin`, `authenticate` (generic failure message,
+  failures audited, never logs the password), `logout`, admin-only
+  `create_user` / `list_users` / `set_role` / `set_active` /
+  `change_password` (self-service proves the current password; admin
+  resets do not need it). Refuses to demote/disable the last active
+  admin. New audit actions `auth.login/logout/create_user/role_change/
+  set_active/password_change`.
+- `AuthSession` on the context holds the login; `context.audit` attributes
+  to the logged-in username, else the OS account as before.
+- Mutating methods on user/device/employee/sync/report services accept
+  keyword-only `requester_role` and refuse roles without the permission;
+  `None` keeps the legacy path (tests, background sync).
+
+#### GUI
+
+- Login dialog at startup, first-run admin setup, Logout back to login
+  (one process serves consecutive operators, each session audited).
+- Role-filtered navigation: Admin sees all views plus User accounts (ten at
+  the time; PHASE 09 adds Backup as an eleventh, admin-only);
+  Office staff hides Device settings/Diagnostics/User accounts; Viewer
+  sees six read-only views. Hidden screens refuse via status message;
+  Developer menu is admin-only. Mutating controls disable per role and
+  the service refuses regardless.
+- New User accounts view (admin): list, add, change role, enable/disable
+  (confirmed), reset password. All password fields masked.
+
+#### Tests
+
+- 50 new tests (29 unit, 18 GUI, 3 migration). New suites: hashing (salt
+  uniqueness, malformed/foreign hashes fail closed, no plaintext in hash), validation, full role
+  matrix, account lifecycle (setup, case-insensitive login/unique
+  create, failures audited without credentials, disable, last-admin
+  guard, self/admin password change, logout), service refusals per
+  role, v6 migration (fresh, v1 upgrade, resumable), no credential in
+  storage/`repr`/audit, plus GUI smoke tests (dialogs, per-role
+  navigation, per-view disabling, developer-menu gating, accounts view).
+- ruff (lint + format) and mypy strict pass clean.
+
 ### PHASE 06 — Reports / Exports (2026-09-04)
 
 Derived, read-only reporting over immutable stored attendance and the

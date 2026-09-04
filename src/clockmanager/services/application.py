@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import platform
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
 from typing import Self
@@ -28,6 +28,8 @@ from clockmanager.persistence.database import (
 )
 from clockmanager.persistence.repositories import DeviceRepository
 from clockmanager.services.audit import AuditService
+from clockmanager.services.auth import AuthService, AuthSession
+from clockmanager.services.backup import BackupService
 from clockmanager.services.devices import (
     DeviceFactory,
     DeviceService,
@@ -106,6 +108,12 @@ class ApplicationContext:
     #: Built once per context. The mock factory is stateful, so rebuilding it
     #: per call would discard every write made through it.
     device_factory: DeviceFactory = build_device
+    #: Mutable login state. The context itself stays an immutable snapshot of
+    #: configuration; the session it carries changes as operators log in/out.
+    #: A default session keeps every existing ``ApplicationContext(...)``
+    #: construction working (tests, headless): nobody logged in means the
+    #: audit actor falls back to the OS account, as before PHASE 07.
+    auth_session: AuthSession = field(default_factory=AuthSession)
 
     @property
     def devices(self) -> DeviceService:
@@ -114,8 +122,14 @@ class ApplicationContext:
 
     @property
     def audit(self) -> AuditService:
-        """Append-only audit log service."""
-        return AuditService(self.database)
+        """Append-only audit log service, attributed to the logged-in user."""
+        current = self.auth_session.current_user
+        return AuditService(self.database, actor=current.username if current is not None else None)
+
+    @property
+    def auth(self) -> AuthService:
+        """Local accounts, login/logout and role enforcement (PHASE 07)."""
+        return AuthService(self.database, self.audit, self.auth_session)
 
     @property
     def users(self) -> UserService:
@@ -146,6 +160,11 @@ class ApplicationContext:
     def reports(self) -> ReportService:
         """Derived reports and exports over immutable data (PHASE 06)."""
         return ReportService(self.database, self.employees, self.timesheets, self.audit)
+
+    @property
+    def backups(self) -> BackupService:
+        """Backup, restore and offline reporting (PHASE 09)."""
+        return BackupService(self.database, self.audit, self.config, self.devices, self.employees)
 
     def status(self) -> ApplicationStatus:
         """Collect a display-ready status snapshot."""

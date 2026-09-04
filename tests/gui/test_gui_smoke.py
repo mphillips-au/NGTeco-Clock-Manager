@@ -26,6 +26,7 @@ EXPECTED_VIEWS = [
     "Device settings",
     "Audit log",
     "Diagnostics",
+    "Backup",
 ]
 
 

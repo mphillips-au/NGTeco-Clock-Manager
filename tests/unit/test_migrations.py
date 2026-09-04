@@ -386,3 +386,42 @@ def test_no_credential_column_in_employee_tables(database) -> None:  # type: ign
     for table in ("employees", "employee_device_links", "pay_schedules"):
         columns = {c["name"].lower() for c in inspect(database.engine).get_columns(table)}
         assert not (forbidden & columns), f"{table} has sensitive columns: {columns & forbidden}"
+
+
+# -- schema version 6: local accounts (PHASE 07) ---------------------------------
+
+
+def test_fresh_database_has_app_users_table(database) -> None:  # type: ignore[no-untyped-def]
+    initialise_database(database)
+    assert "app_users" in inspect(database.engine).get_table_names()
+    columns = {column["name"] for column in inspect(database.engine).get_columns("app_users")}
+    assert {
+        "username",
+        "display_name",
+        "role",
+        "password_hash",
+        "is_active",
+        "last_login_at",
+    } <= columns
+
+
+def test_v1_database_gains_app_users_without_losing_data(database) -> None:  # type: ignore[no-untyped-def]
+    _build_v1_database(database)
+    initialise_database(database)
+
+    assert "app_users" in inspect(database.engine).get_table_names()
+    with database.session() as session:
+        assert session.query(DeviceRecord).one().name == "Existing clock"
+
+
+def test_app_users_migration_is_resumable(database) -> None:  # type: ignore[no-untyped-def]
+    """Re-running after an interruption must not fail on the existing table."""
+    from clockmanager.persistence.migrations import MIGRATIONS as _MIGRATIONS
+
+    initialise_database(database)
+    migration = next(m for m in _MIGRATIONS if m.version == 6)
+    with database.engine.begin() as connection:
+        migration.apply(connection)
+        migration.apply(connection)
+
+    assert "app_users" in inspect(database.engine).get_table_names()

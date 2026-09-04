@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from clockmanager.gui.views.attendance import AttendanceView
 from clockmanager.gui.views.audit import AuditView
+from clockmanager.gui.views.auth import BootstrapAdminDialog, LoginDialog, UserAccountsView
+from clockmanager.gui.views.backup import BackupView
 from clockmanager.gui.views.dashboard import DashboardView
 from clockmanager.gui.views.device_settings import DeviceSettingsView
 from clockmanager.gui.views.diagnostics import DiagnosticsView
@@ -27,13 +29,17 @@ from clockmanager.gui.views.users import UsersView
 __all__ = [
     "AttendanceView",
     "AuditView",
+    "BackupView",
+    "BootstrapAdminDialog",
     "DashboardView",
     "DeviceSettingsView",
     "DiagnosticsView",
     "EmployeesView",
     "LiveEventsView",
+    "LoginDialog",
     "ReportsView",
     "TimesheetsView",
+    "UserAccountsView",
     "UserFormDialog",
     "UsersView",
 ]
