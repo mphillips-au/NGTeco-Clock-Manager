@@ -13,16 +13,27 @@ were verified working against the real MB1. Everything the MB1 does
   ``int(user_id)`` for any user it cannot find, which raises on a non-numeric
   ID. The live loop is therefore driven directly from the socket here.
 
-This adapter is READ-ONLY. It exposes no write, delete, clear or reset
-operation, and none may be added without a verified 120-byte write path,
-explicit confirmation, read-back verification and audit logging.
+PHASE 03 adds a user write path. It is **not** a call to ``pyzk.set_user()``:
+that builds a 72-byte packet for a device whose records are 120 bytes. This
+adapter builds the exact 120-byte record itself
+(:mod:`clockmanager.protocol.builders`) and sends it with ``CMD_USER_WRQ``.
+
+Every write follows the same sequence, in the adapter so it cannot be skipped:
+read the device, locate the target record, build, send, verify the device
+acknowledged it, read back, and compare. Only then does the caller get an
+outcome to audit. Writes are additionally refused unless an operator has
+explicitly unlocked the capability, because no MB1 has yet accepted a record
+from this path.
+
+Attendance clearing, factory reset and biometric writing do not exist here and
+must not be added.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from datetime import datetime
-from struct import unpack
+from struct import pack, unpack
 from types import TracebackType
 from typing import Any, Self
 
@@ -31,6 +42,16 @@ from zk.exception import ZKErrorConnection, ZKErrorResponse, ZKNetworkError
 
 from clockmanager.diagnostics.logging_setup import get_logger
 from clockmanager.domain.models import AttendanceEvent, DeviceIdentity, DeviceInfo, DeviceUser
+from clockmanager.domain.users import (
+    UserDraft,
+    UserWriteOutcome,
+    describe_changes,
+)
+from clockmanager.protocol.builders import (
+    RawUserRecord,
+    build_user_record,
+    parse_raw_user_records,
+)
 from clockmanager.protocol.capabilities import (
     NG_MB1_CAPABILITIES,
     Capability,
@@ -38,23 +59,33 @@ from clockmanager.protocol.capabilities import (
 )
 from clockmanager.protocol.constants import (
     CMD_ATTLOG_RRQ,
+    CMD_DELETE_USER,
+    CMD_REFRESHDATA,
     CMD_REG_EVENT,
+    CMD_USER_WRQ,
     CMD_USERTEMP_RRQ,
     EF_ATTLOG,
     FCT_USER,
     LIVE_EVENT_BUFFER_BYTES,
+    MAX_USER_UID,
+    MB1_USER_RECORD_SIZE,
+    USER_CREDENTIAL_SLICE,
 )
 from clockmanager.protocol.errors import (
     DeviceConnectionError,
     DeviceNotConnectedError,
     DeviceProtocolError,
     DeviceTimeoutError,
+    DeviceValidationError,
+    DeviceVerificationError,
+    DeviceWriteError,
 )
 from clockmanager.protocol.interface import DeviceConnectionSettings
 from clockmanager.protocol.records import (
     parse_attendance_payload,
     parse_live_event,
     parse_user_payload,
+    parse_user_record,
 )
 from clockmanager.protocol.retry import RetryPolicy, call_with_retry
 
@@ -66,6 +97,13 @@ _logger = get_logger(__name__)
 TransportFactory = Callable[[DeviceConnectionSettings], Any]
 
 MODEL_NAME = "NG-MB1"
+
+#: Why an operator-unlocked capability is usable. Recorded on the capability
+#: itself so it travels into diagnostics and the GUI.
+_WRITE_UNLOCK_REASON = (
+    "Deliberately enabled by an operator to verify the 120-byte write path on "
+    "real hardware. Use disposable test users only."
+)
 
 
 def _default_transport(settings: DeviceConnectionSettings) -> ZK:
@@ -111,6 +149,8 @@ class NGTecoMB1Device:
         transport_factory: TransportFactory = _default_transport,
         retry_policy: RetryPolicy | None = None,
         auto_reconnect: bool = True,
+        allow_writes: bool = False,
+        allow_credential_writes: bool = False,
     ) -> None:
         self._settings = settings
         self._transport_factory = transport_factory
@@ -118,6 +158,10 @@ class NGTecoMB1Device:
         self._auto_reconnect = auto_reconnect
         self._transport: Any | None = None
         self._stop_live = False
+        self._capabilities = _resolve_capabilities(
+            allow_writes=allow_writes,
+            allow_credential_writes=allow_credential_writes,
+        )
 
     # -- identity -------------------------------------------------------------
 
@@ -127,7 +171,7 @@ class NGTecoMB1Device:
 
     @property
     def capabilities(self) -> DeviceCapabilities:
-        return NG_MB1_CAPABILITIES
+        return self._capabilities
 
     @property
     def is_connected(self) -> bool:
@@ -311,6 +355,245 @@ class NGTecoMB1Device:
         )
         return events
 
+    # -- writes ---------------------------------------------------------------
+
+    def read_raw_user_records(self) -> list[RawUserRecord]:
+        """Read every user record whole, credential region included.
+
+        Protocol-internal. The result must never be returned to the service or
+        GUI layers: use :meth:`get_users`, which discards credential bytes.
+        """
+        self.capabilities.require(Capability.READ_USERS)
+
+        def _read(transport: Any) -> list[RawUserRecord]:
+            payload, _size = transport.read_with_buffer(CMD_USERTEMP_RRQ, FCT_USER)
+            return parse_raw_user_records(payload)
+
+        records: list[RawUserRecord] = self._call(_read, description="Reading user records")
+        return records
+
+    def next_available_uid(self) -> int:
+        """The lowest UID not currently in use, for a newly created user."""
+        return _first_free_uid({record.uid for record in self.read_raw_user_records()})
+
+    def apply_user_write(self, draft: UserDraft) -> UserWriteOutcome:
+        """Create or update one user, verifying the result before returning.
+
+        The sequence is fixed here so a caller cannot perform it partially:
+        read, validate, build, send, verify the acknowledgement, read back and
+        compare. Any step that fails raises; only a fully verified write
+        returns an outcome for the caller to audit.
+        """
+        self.capabilities.require(Capability.WRITE_USERS)
+        if draft.changes_credential:
+            self.capabilities.require(Capability.WRITE_USER_PASSWORD)
+
+        draft = draft.normalised()
+        problems = draft.validate(encoding=self._settings.encoding)
+        if problems:
+            raise DeviceValidationError(" ".join(problems))
+
+        # 1. read the device
+        existing_records = self.read_raw_user_records()
+        by_uid = {record.uid: record for record in existing_records}
+        current = None if draft.device_uid is None else by_uid.get(draft.device_uid)
+
+        # 2. validate the draft against what is actually on the device
+        uid = self._resolve_target_uid(draft, existing_records, current)
+        before = (
+            None
+            if current is None
+            else parse_user_record(current.raw, encoding=self._settings.encoding)
+        )
+
+        # 3. build the exact 120-byte record
+        record = build_user_record(
+            uid=uid,
+            user_id=draft.user_id,
+            first_name=draft.first_name,
+            last_name=draft.last_name,
+            privilege=draft.privilege,
+            credential_action=draft.credential_action,
+            existing=current,
+            password=draft.password,
+            encoding=self._settings.encoding,
+        )
+
+        # 4/5. send, and require the device to acknowledge it
+        self._send_and_refresh(
+            CMD_USER_WRQ,
+            record,
+            description=f"Writing user record for UID {uid}",
+        )
+
+        # 6/7. read back and compare
+        stored = self._read_back_record(uid)
+        self._compare_records(sent=record, stored=stored.raw, uid=uid)
+
+        after = parse_user_record(stored.raw, encoding=self._settings.encoding)
+        _logger.info(
+            "User record written and verified",
+            extra={
+                "device": self._settings.name,
+                "device_uid": uid,
+                "user_id": after.user_id,
+                # Not "created": logging reserves that attribute name.
+                "record_created": current is None,
+            },
+        )
+        return UserWriteOutcome(
+            user=after,
+            created=current is None,
+            changes=tuple(describe_changes(before, draft)),
+        )
+
+    def _resolve_target_uid(
+        self,
+        draft: UserDraft,
+        existing: list[RawUserRecord],
+        current: RawUserRecord | None,
+    ) -> int:
+        """Decide which UID to write, refusing anything that would collide."""
+        if draft.device_uid is not None and current is None:
+            raise DeviceValidationError(
+                f"No user with device UID {draft.device_uid} exists on the device. "
+                "Re-read the user list before updating."
+            )
+
+        conflicting = [
+            record
+            for record in existing
+            if record.user_id == draft.user_id and (current is None or record.uid != current.uid)
+        ]
+        if conflicting:
+            raise DeviceValidationError(
+                f"User ID {draft.user_id!r} is already used by device UID "
+                f"{conflicting[0].uid}. User IDs must be unique on the device."
+            )
+
+        if current is not None:
+            return current.uid
+        return _first_free_uid({record.uid for record in existing})
+
+    def delete_user(self, device_uid: int) -> DeviceUser:
+        """Delete one user by device UID, verifying the removal before returning.
+
+        Returns the user exactly as it was immediately before deletion, so the
+        caller can audit what was removed.
+
+        Attendance history already recorded on the device is NOT deleted by
+        this command, and this method never attempts to clear it.
+        """
+        self.capabilities.require(Capability.DELETE_USERS)
+
+        # 1. read: identify exactly what is about to be deleted
+        records = {record.uid: record for record in self.read_raw_user_records()}
+        target = records.get(device_uid)
+        if target is None:
+            raise DeviceValidationError(
+                f"No user with device UID {device_uid} exists on the device. "
+                "Re-read the user list before deleting."
+            )
+        doomed = parse_user_record(target.raw, encoding=self._settings.encoding)
+
+        # 2/3. send, and require the device to acknowledge it
+        self._send_and_refresh(
+            CMD_DELETE_USER,
+            pack("<H", device_uid),
+            description=f"Deleting user UID {device_uid}",
+        )
+
+        # 4. read back: the record must actually be gone
+        remaining = {record.uid for record in self.read_raw_user_records()}
+        if device_uid in remaining:
+            raise DeviceVerificationError(
+                f"The device acknowledged deleting UID {device_uid}, but the record is "
+                "still present after re-reading. Treat the device state as unknown."
+            )
+
+        _logger.info(
+            "User deleted and verified",
+            extra={
+                "device": self._settings.name,
+                "device_uid": device_uid,
+                "user_id": doomed.user_id,
+            },
+        )
+        return doomed
+
+    def _send_and_refresh(self, command: int, payload: bytes, *, description: str) -> None:
+        """Send one write command, require an acknowledgement, then refresh.
+
+        ``CMD_REFRESHDATA`` makes the device reload its interior data. Without
+        it a subsequent read can return the pre-write state, which would make a
+        successful write look like a failed one.
+
+        Writes are deliberately NOT retried. A retry could apply the same
+        change twice, and a write whose outcome is unknown must be investigated
+        rather than repeated.
+        """
+        transport = self._require_transport()
+        try:
+            send_command = _private(transport, "send_command")
+            response = send_command(command, payload, 1024)
+            if not response.get("status"):
+                raise DeviceWriteError(
+                    f"{description} was rejected by the device "
+                    f"(response code {response.get('code')})."
+                )
+            refresh = send_command(CMD_REFRESHDATA, b"", 8)
+            if not refresh.get("status"):
+                raise DeviceWriteError(
+                    f"{description} was accepted, but the device refused to reload its "
+                    f"data (response code {refresh.get('code')}). Treat the device "
+                    "state as unknown and re-read it."
+                )
+        except (ZKErrorConnection, ZKNetworkError) as exc:
+            raise DeviceConnectionError(f"{description} lost the connection: {exc}") from exc
+        except ZKErrorResponse as exc:
+            raise DeviceWriteError(f"{description} was rejected by the device: {exc}") from exc
+        except OSError as exc:
+            raise DeviceConnectionError(f"{description} failed: {exc}") from exc
+
+    def _read_back_record(self, uid: int) -> RawUserRecord:
+        for record in self.read_raw_user_records():
+            if record.uid == uid:
+                return record
+        raise DeviceVerificationError(
+            f"The device acknowledged the write for UID {uid}, but no such record was "
+            "present when reading back. Treat the device state as unknown."
+        )
+
+    def _compare_records(self, *, sent: bytes, stored: bytes, uid: int) -> None:
+        """Confirm the device stored what was sent.
+
+        Every byte outside the credential region must match exactly. The
+        credential region is compared only on whether a credential is present:
+        a device is free to store a PIN in a transformed form, so comparing
+        those bytes would fail spuriously and would mean handling the secret.
+        """
+        if len(stored) != MB1_USER_RECORD_SIZE:  # pragma: no cover - guarded upstream
+            raise DeviceVerificationError(
+                f"Read back a {len(stored)}-byte record for UID {uid}, expected "
+                f"{MB1_USER_RECORD_SIZE}."
+            )
+
+        def _without_credential(record: bytes) -> bytes:
+            return record[: USER_CREDENTIAL_SLICE.start] + record[USER_CREDENTIAL_SLICE.stop :]
+
+        if _without_credential(sent) != _without_credential(stored):
+            raise DeviceVerificationError(
+                f"The record stored for UID {uid} does not match what was sent. The "
+                "write was acknowledged but not applied as requested; re-read the "
+                "device before making further changes."
+            )
+
+        if any(sent[USER_CREDENTIAL_SLICE]) != any(stored[USER_CREDENTIAL_SLICE]):
+            raise DeviceVerificationError(
+                f"The credential state stored for UID {uid} does not match what was "
+                "sent. Re-read the device before making further changes."
+            )
+
     # -- live capture ---------------------------------------------------------
 
     def stop_live_capture(self) -> None:
@@ -401,6 +684,32 @@ def _live_chunk_size(remaining: int) -> int | None:
     if remaining >= 52:
         return 52
     return None
+
+
+def _first_free_uid(taken: set[int]) -> int:
+    """The lowest UID not already in use on the device."""
+    for candidate in range(1, MAX_USER_UID + 1):
+        if candidate not in taken:
+            return candidate
+    raise DeviceWriteError(f"The device already holds a user at every UID up to {MAX_USER_UID}.")
+
+
+def _resolve_capabilities(
+    *, allow_writes: bool, allow_credential_writes: bool
+) -> DeviceCapabilities:
+    """Apply operator write unlocks to the documented MB1 capability set."""
+    unlocked: list[Capability] = []
+    if allow_writes:
+        unlocked.extend((Capability.WRITE_USERS, Capability.DELETE_USERS))
+    if allow_credential_writes:
+        if not allow_writes:
+            raise DeviceValidationError(
+                "Credential writing cannot be unlocked while user writing is locked."
+            )
+        unlocked.append(Capability.WRITE_USER_PASSWORD)
+    if not unlocked:
+        return NG_MB1_CAPABILITIES
+    return NG_MB1_CAPABILITIES.unlocked(unlocked, reason=_WRITE_UNLOCK_REASON)
 
 
 def _as_text(value: Any) -> str:

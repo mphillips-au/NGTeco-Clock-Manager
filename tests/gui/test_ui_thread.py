@@ -15,7 +15,9 @@ from PySide6.QtWidgets import QApplication
 from clockmanager.domain.models import AttendanceEvent, DeviceInfo, DeviceUser
 from clockmanager.gui.views import AttendanceView, DashboardView, DiagnosticsView, UsersView
 from clockmanager.services.application import ApplicationContext
+from clockmanager.services.audit import AuditService
 from clockmanager.services.devices import ConnectionTestResult, DeviceProfile, DeviceService
+from clockmanager.services.users import UserService
 from tests.gui.conftest import drain
 
 pytestmark = pytest.mark.gui
@@ -69,6 +71,15 @@ def recording(configured_context: ApplicationContext) -> ThreadRecordingService:
     return ThreadRecordingService(configured_context.devices)
 
 
+def _user_service(devices: ThreadRecordingService) -> UserService:
+    """A user service over the recording device service.
+
+    Writes stay switched off, which is what the shipped default is: these
+    tests are about which thread the reads happen on.
+    """
+    return UserService(devices, AuditService(devices._inner._database))
+
+
 def _ui_thread_id() -> int:
     return threading.get_ident()
 
@@ -77,7 +88,7 @@ def test_users_view_reads_off_the_ui_thread(
     qt_app: QApplication, recording: ThreadRecordingService
 ) -> None:
     ui_thread = _ui_thread_id()
-    view = UsersView(recording)
+    view = UsersView(recording, _user_service(recording))
     view.load()
     drain(qt_app)
 
@@ -150,7 +161,7 @@ def test_no_view_calls_a_device_read_in_its_constructor(
     qt_app: QApplication, recording: ThreadRecordingService, configured_context: ApplicationContext
 ) -> None:
     """Constructing a view must not block on the network."""
-    UsersView(recording)
+    UsersView(recording, _user_service(recording))
     AttendanceView(recording)
     qt_app.processEvents()
 

@@ -6,8 +6,11 @@ Configuration resolution order (last wins):
 2. the JSON configuration file in the application data directory
 3. ``CLOCKMANAGER_*`` environment variables
 
-No device address, credential or secret is stored in source. Device connection
-settings arrive in PHASE 02.
+No device address, credential or secret is stored in source.
+
+Two settings gate device writing. They default to off and must be turned on
+deliberately, because no NG-MB1 has yet accepted a record from this
+application's write path (``PROTOCOL.md``).
 """
 
 from __future__ import annotations
@@ -104,8 +107,16 @@ class AppConfig:
     database_echo: bool = False
     #: Run against the built-in mock device instead of real hardware, so the
     #: application can be developed and demonstrated with no clock attached.
-    #: Never enables a device write; the mock is read-only like the real adapter.
     use_mock_device: bool = False
+    #: Unlock user create/update/delete on the device. OFF by default: the
+    #: 120-byte write path is unit-tested but no MB1 has accepted a record from
+    #: it, so it stays locked until an administrator enables it and proves it
+    #: with a disposable test user (AGENTS.md, PROTOCOL.md).
+    enable_device_writes: bool = False
+    #: Unlock writing the credential region (setting or clearing a PIN). OFF by
+    #: default and ineffective unless ``enable_device_writes`` is also on: the
+    #: region's internal layout is unverified.
+    enable_credential_writes: bool = False
 
     def __post_init__(self) -> None:
         if self.log_level.upper() not in _VALID_LOG_LEVELS:
@@ -134,6 +145,8 @@ class AppConfig:
             "developer_mode": self.developer_mode,
             "database_echo": self.database_echo,
             "use_mock_device": self.use_mock_device,
+            "enable_device_writes": self.enable_device_writes,
+            "enable_credential_writes": self.enable_credential_writes,
         }
 
 
@@ -170,6 +183,8 @@ def _environment_overrides(environ: dict[str, str]) -> dict[str, Any]:
         f"{ENV_PREFIX}DEVELOPER_MODE": "developer_mode",
         f"{ENV_PREFIX}DATABASE_ECHO": "database_echo",
         f"{ENV_PREFIX}USE_MOCK_DEVICE": "use_mock_device",
+        f"{ENV_PREFIX}ENABLE_DEVICE_WRITES": "enable_device_writes",
+        f"{ENV_PREFIX}ENABLE_CREDENTIAL_WRITES": "enable_credential_writes",
     }
     for env_name, field_name in mapping.items():
         if env_name in environ:
@@ -207,6 +222,8 @@ def load_config(
         "developer_mode",
         "database_echo",
         "use_mock_device",
+        "enable_device_writes",
+        "enable_credential_writes",
     ):
         if bool_field in settings:
             settings[bool_field] = _coerce_bool(settings[bool_field], name=bool_field)

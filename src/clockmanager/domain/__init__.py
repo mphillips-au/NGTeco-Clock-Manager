@@ -15,14 +15,26 @@ from clockmanager.domain.models import (
     describe_privilege,
     describe_punch,
 )
+from clockmanager.domain.users import (
+    CredentialAction,
+    UserChange,
+    UserDraft,
+    UserWriteOutcome,
+    describe_changes,
+)
 
 __all__ = [
     "AttendanceEvent",
+    "CredentialAction",
     "DeviceIdentity",
     "DeviceInfo",
     "DeviceUser",
     "Privilege",
     "PunchDirection",
+    "UserChange",
+    "UserDraft",
+    "UserWriteOutcome",
+    "describe_changes",
     "describe_privilege",
     "describe_punch",
 ]

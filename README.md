@@ -71,18 +71,59 @@ directory:
 
 Environment overrides use the `CLOCKMANAGER_` prefix, for example
 `CLOCKMANAGER_DATA_DIR`, `CLOCKMANAGER_LOG_LEVEL`,
-`CLOCKMANAGER_DEVELOPER_MODE` and `CLOCKMANAGER_USE_MOCK_DEVICE`.
+`CLOCKMANAGER_DEVELOPER_MODE`, `CLOCKMANAGER_USE_MOCK_DEVICE`,
+`CLOCKMANAGER_ENABLE_DEVICE_WRITES` and
+`CLOCKMANAGER_ENABLE_CREDENTIAL_WRITES`.
 
 No device address and no credential is stored in source or in the default
 configuration. Device connection settings are configured in the application and
 stored in the local database.
 
+## Device writing
+
+User management (add, edit, delete) is **switched off by default**, and the
+application reads from the clock without changing it.
+
+The reason is not caution for its own sake. The MB1 write path is built on the
+verified 120-byte record and is covered by unit tests, but **no NG-MB1 has yet
+accepted a record from it**. Until one has, enabling it is a deliberate act:
+
+```bash
+CLOCKMANAGER_ENABLE_DEVICE_WRITES=1 .venv/Scripts/clockmanager.exe
+```
+
+Setting a PIN needs a second switch, because the layout of the record's
+credential region is inferred rather than verified:
+
+```bash
+CLOCKMANAGER_ENABLE_CREDENTIAL_WRITES=1
+```
+
+With writing on, the application still refuses to guess: it never calls
+`pyzk.set_user()`, it builds an exact 120-byte record, and every write is read
+back from the device and compared before it is reported as done. Deleting a
+user shows the exact record and its attendance impact and requires a
+confirmation. Every attempt — succeeded, failed or refused — is recorded in the
+Audit log view.
+
+Prove it with a disposable test user before trusting it with real staff.
+
 ## Real-device tests
 
-The integration suite never runs by default. To run it against a real clock:
+The integration suite never runs by default. To run the read-only tests against
+a real clock:
 
 ```bash
 CLOCKMANAGER_TEST_DEVICE_HOST=<your-device-ip> .venv/Scripts/python.exe -m pytest tests/integration -m real_device
 ```
 
-Those tests are read-only. This build never writes to a device.
+The write tests need a second, separate opt-in. They create, modify and delete
+only accounts prefixed `ZZTEST-`, and clean up after themselves:
+
+```bash
+CLOCKMANAGER_TEST_DEVICE_HOST=<ip> CLOCKMANAGER_TEST_ALLOW_WRITES=1 .venv/Scripts/python.exe -m pytest tests/integration -m real_device
+```
+
+Running that suite successfully is what turns the write path from unverified
+into verified. Nothing in the suite clears attendance, resets the device or
+touches a biometric template.

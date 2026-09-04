@@ -31,6 +31,50 @@ Every write:
 - reads back the result
 - records an audit event
 
+Implemented in PHASE 03. The byte-level sequence lives in the device adapter so
+a caller cannot perform it partially; the policy around it (whether writing is
+permitted, what the operator is shown, what is audited) lives in
+`clockmanager.services.users`.
+
+Device writing is **off by default** and is enabled per installation with
+`CLOCKMANAGER_ENABLE_DEVICE_WRITES=1`. Writing a PIN needs the further
+`CLOCKMANAGER_ENABLE_CREDENTIAL_WRITES=1`, because the credential region's
+layout is unverified.
+
+## User credential data
+
+No user PIN, card identifier or biometric template is persisted anywhere.
+
+A PIN supplied by an operator exists only for the duration of one write:
+
+- it is carried in `UserDraft.password`, excluded from `repr` so it cannot
+  reach a log or traceback
+- the raw 120-byte record, which contains the credential region, is confined to
+  `clockmanager.protocol`; `RawUserRecord.raw` is excluded from `repr` and the
+  type is never returned to a service or the GUI
+- the domain `DeviceUser` has nowhere to put credential bytes; it carries only
+  `has_credential_data`
+- the GUI never populates the PIN field from the device, and masks it
+- a change is described as an action ("Set a new PIN"), never as a value
+
+## Audit log
+
+`audit_events` is append-only. `AuditRepository` exposes `add`, `recent` and
+`count` and no way to edit or delete a row, and the Audit log view is read-only.
+
+Entries record refusals and failures as well as successes: a log that shows
+only what succeeded cannot answer the question it exists for.
+
+Rows are kept when a device profile is removed — `device_id` is a plain value,
+not a foreign key — so deleting a device cannot erase the record of what was
+done to it.
+
+Every `detail` passes through `redact_text` before storage, and no
+credential-shaped column exists on the table.
+
+Actor identity is the operating-system account. Roles arrive in PHASE 07;
+claiming more identity than the application has would be a fiction.
+
 ## Device communication password
 
 The device communication password is stored in the application database so the

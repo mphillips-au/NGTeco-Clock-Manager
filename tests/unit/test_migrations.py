@@ -225,3 +225,57 @@ def test_tables_without_a_recorded_version_are_refused(database) -> None:  # typ
 
     with pytest.raises(PersistenceError, match="Refusing to guess"):
         initialise_database(database)
+
+
+# -- schema version 3: the audit log (PHASE 03) --------------------------------
+
+
+def test_v1_database_gains_the_audit_table(database) -> None:  # type: ignore[no-untyped-def]
+    """The audit table must appear on an upgrade, not only on a fresh install."""
+    _build_v1_database(database)
+    assert "audit_events" not in inspect(database.engine).get_table_names()
+
+    initialise_database(database)
+
+    assert "audit_events" in inspect(database.engine).get_table_names()
+
+
+def test_audit_table_upgrade_preserves_device_data(database) -> None:  # type: ignore[no-untyped-def]
+    _build_v1_database(database)
+    initialise_database(database)
+
+    with database.session() as session:
+        assert session.query(DeviceRecord).one().name == "Existing clock"
+        assert session.execute(text("SELECT COUNT(*) FROM audit_events")).scalar_one() == 0
+
+
+def test_audit_migration_is_resumable(database) -> None:  # type: ignore[no-untyped-def]
+    """Re-running after an interruption must not fail on an existing table."""
+    from clockmanager.persistence.migrations import MIGRATIONS as _MIGRATIONS
+
+    migration = next(m for m in _MIGRATIONS if m.version == 3)
+    with database.engine.begin() as connection:
+        migration.apply(connection)
+        migration.apply(connection)
+
+    assert "audit_events" in inspect(database.engine).get_table_names()
+
+
+def test_audit_rows_written_before_an_upgrade_survive_it(database) -> None:  # type: ignore[no-untyped-def]
+    """AGENTS.md: never drop or rewrite a column holding user data."""
+    initialise_database(database)
+    now = datetime.now(UTC).isoformat(sep=" ")
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO audit_events "
+                "(occurred_at, actor, action, outcome, detail) "
+                f"VALUES ('{now}', 'tester', 'user.delete', 'succeeded', 'kept')"
+            )
+        )
+
+    initialise_database(database)
+
+    with database.session() as session:
+        rows = session.execute(text("SELECT actor, detail FROM audit_events")).all()
+        assert rows == [("tester", "kept")]

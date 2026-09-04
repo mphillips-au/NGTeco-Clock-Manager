@@ -21,6 +21,7 @@ EXPECTED_VIEWS = [
     "Attendance",
     "Live events",
     "Device settings",
+    "Audit log",
     "Diagnostics",
 ]
 
@@ -36,7 +37,7 @@ def test_window_title_includes_application_name(
         window.close()
 
 
-def test_all_phase_02_views_are_present(
+def test_all_expected_views_are_present(
     qt_app: QApplication, mock_context: ApplicationContext
 ) -> None:
     window = MainWindow(mock_context)

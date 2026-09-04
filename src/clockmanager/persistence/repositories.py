@@ -2,8 +2,9 @@
 
 Services depend on repositories, not on SQLAlchemy queries, so the store can be
 swapped (SQLite now, PostgreSQL for the future NAS deployment) without changing
-business logic. PHASE 00 provides the device repository only; user and
-attendance repositories arrive with the phases that need them.
+business logic. PHASE 00 provided the device repository; PHASE 03 adds the
+audit repository. User and attendance repositories arrive with the phases that
+need them.
 """
 
 from __future__ import annotations
@@ -12,9 +13,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from clockmanager.domain.models import DeviceIdentity
-from clockmanager.persistence.models import DeviceRecord
+from clockmanager.persistence.models import AuditEventRecord, DeviceRecord
 
-__all__ = ["DeviceRepository"]
+__all__ = ["AuditRepository", "DeviceRepository"]
 
 
 class DeviceRepository:
@@ -57,3 +58,32 @@ class DeviceRepository:
             platform=record.platform,
             firmware_version=record.firmware_version,
         )
+
+
+class AuditRepository:
+    """Append-only access to the audit log.
+
+    There is deliberately no update or delete method. An audit log that the
+    application can rewrite is not evidence of anything.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, record: AuditEventRecord) -> AuditEventRecord:
+        self._session.add(record)
+        self._session.flush()
+        return record
+
+    def recent(self, *, limit: int = 200) -> list[AuditEventRecord]:
+        """The most recent entries, newest first."""
+        statement = (
+            select(AuditEventRecord)
+            .order_by(AuditEventRecord.occurred_at.desc(), AuditEventRecord.id.desc())
+            .limit(limit)
+        )
+        return list(self._session.execute(statement).scalars().all())
+
+    def count(self) -> int:
+        statement = select(func.count()).select_from(AuditEventRecord)
+        return int(self._session.execute(statement).scalar_one())

@@ -67,7 +67,7 @@ class TestUsersView:
     def test_loads_users_from_the_device(
         self, qt_app: QApplication, configured_context: ApplicationContext
     ) -> None:
-        view = UsersView(configured_context.devices)
+        view = UsersView(configured_context.devices, configured_context.users)
         view.load()
         drain(qt_app)
 
@@ -78,7 +78,7 @@ class TestUsersView:
     def test_shows_privilege_labels(
         self, qt_app: QApplication, configured_context: ApplicationContext
     ) -> None:
-        view = UsersView(configured_context.devices)
+        view = UsersView(configured_context.devices, configured_context.users)
         view.load()
         drain(qt_app)
         text = _table_text(view._table)
@@ -88,7 +88,7 @@ class TestUsersView:
     def test_filter_narrows_the_list(
         self, qt_app: QApplication, configured_context: ApplicationContext
     ) -> None:
-        view = UsersView(configured_context.devices)
+        view = UsersView(configured_context.devices, configured_context.users)
         view.load()
         drain(qt_app)
 
@@ -98,7 +98,7 @@ class TestUsersView:
     def test_reports_when_no_device_is_configured(
         self, qt_app: QApplication, mock_context: ApplicationContext
     ) -> None:
-        view = UsersView(mock_context.devices)
+        view = UsersView(mock_context.devices, mock_context.users)
         view.load()
         drain(qt_app)
         assert "No device is configured" in view._status.text()
@@ -107,7 +107,7 @@ class TestUsersView:
         self, qt_app: QApplication, configured_context: ApplicationContext
     ) -> None:
         """SECURITY.md: only presence is shown, never the region's contents."""
-        view = UsersView(configured_context.devices)
+        view = UsersView(configured_context.devices, configured_context.users)
         view.load()
         drain(qt_app)
 
@@ -121,7 +121,7 @@ class TestUsersView:
             "First name",
             "Last name",
             "Privilege",
-            "Credential set",
+            "PIN set",
         ]
         assert set(_table_text(view._table).split()) & {"Yes", "No"}
 

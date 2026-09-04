@@ -11,6 +11,7 @@ from datetime import datetime
 import pytest
 
 from clockmanager.domain.models import AttendanceEvent, PunchDirection
+from clockmanager.domain.users import UserDraft
 from clockmanager.protocol.capabilities import Capability
 from clockmanager.protocol.errors import (
     DeviceCapabilityError,
@@ -154,6 +155,18 @@ def test_mock_refuses_unverified_capabilities_like_the_real_adapter() -> None:
         device.capabilities.require(Capability.WRITE_USERS)
 
 
-def test_mock_exposes_no_write_operations() -> None:
+def test_mock_refuses_writes_unless_they_are_unlocked() -> None:
+    """The mock mirrors the real gate, so tests cannot write by accident."""
+    device = MockAttendanceDevice(script=_script())
+    device.connect()
+    with pytest.raises(DeviceCapabilityError):
+        device.apply_user_write(UserDraft(user_id="TEST-1"))
+    with pytest.raises(DeviceCapabilityError):
+        device.delete_user(1)
+
+
+def test_mock_exposes_no_attendance_clearing_or_reset() -> None:
     public = {name for name in dir(MockAttendanceDevice) if not name.startswith("_")}
-    assert not any("write" in name or "delete" in name for name in public)
+    assert not any(
+        name in public for name in ("clear_attendance", "restart", "poweroff", "set_user")
+    )

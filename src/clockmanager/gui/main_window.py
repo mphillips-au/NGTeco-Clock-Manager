@@ -27,6 +27,7 @@ from clockmanager import APPLICATION_NAME, __version__
 from clockmanager.diagnostics.logging_setup import get_logger
 from clockmanager.gui.views import (
     AttendanceView,
+    AuditView,
     DashboardView,
     DeviceSettingsView,
     DiagnosticsView,
@@ -57,11 +58,14 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{APPLICATION_NAME} {__version__}")
         self.resize(1100, 720)
 
+        self._users_service = context.users
+
         self.dashboard_view = DashboardView(context, self._service, self)
-        self.users_view = UsersView(self._service, self)
+        self.users_view = UsersView(self._service, self._users_service, self)
         self.attendance_view = AttendanceView(self._service, self)
         self.live_view = LiveEventsView(self._service, self)
         self.device_settings_view = DeviceSettingsView(self._service, self)
+        self.audit_view = AuditView(context.audit, self)
         self.diagnostics_view = DiagnosticsView(context, self._service, self)
 
         self._entries = [
@@ -70,6 +74,7 @@ class MainWindow(QMainWindow):
             _NavigationEntry("Attendance", self.attendance_view),
             _NavigationEntry("Live events", self.live_view),
             _NavigationEntry("Device settings", self.device_settings_view),
+            _NavigationEntry("Audit log", self.audit_view),
             _NavigationEntry("Diagnostics", self.diagnostics_view),
         ]
 
@@ -120,6 +125,8 @@ class MainWindow(QMainWindow):
         # Keep views that depend on stored settings current.
         if entry.widget is self.dashboard_view:
             self.dashboard_view.refresh()
+        elif entry.widget is self.audit_view:
+            self.audit_view.refresh()
         elif entry.widget is self.device_settings_view:
             self.device_settings_view.refresh()
         elif entry.widget is self.diagnostics_view:
@@ -159,8 +166,23 @@ class MainWindow(QMainWindow):
             self,
             f"About {APPLICATION_NAME}",
             f"{APPLICATION_NAME} {__version__}\n\n"
-            "Attendance management for NGTeco NG-MB1 devices.\n\n"
-            "This build is read-only: it never writes to a device.",
+            "Attendance management for NGTeco NG-MB1 devices.\n\n" + self._write_mode_summary(),
+        )
+
+    def _write_mode_summary(self) -> str:
+        """State plainly whether this installation can change a device."""
+        if not self._context.config.enable_device_writes:
+            return (
+                "Device writing is disabled: this build reads from the clock and never changes it."
+            )
+        if self._context.config.enable_credential_writes:
+            return (
+                "Device writing is ENABLED, including PIN changes. Neither has been "
+                "verified on real hardware; use disposable test users."
+            )
+        return (
+            "Device user writing is ENABLED. It has not been verified on real "
+            "hardware; use disposable test users. PIN writing remains disabled."
         )
 
     def _show_schema_info(self) -> None:
@@ -169,10 +191,12 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Database metadata", body or "No metadata recorded.")
 
     def _show_ready_message(self) -> None:
-        message = "Ready"
+        parts = ["Ready"]
         if self._context.config.use_mock_device:
-            message = "Ready — using the built-in mock device, not real hardware"
-        self.statusBar().showMessage(message)
+            parts.append("using the built-in mock device, not real hardware")
+        if self._context.config.enable_device_writes:
+            parts.append("device writing ENABLED (unverified)")
+        self.statusBar().showMessage(" — ".join(parts))
 
     # -- lifecycle ------------------------------------------------------------
 

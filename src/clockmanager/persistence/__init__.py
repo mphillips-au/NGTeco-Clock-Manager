@@ -10,6 +10,7 @@ from clockmanager.persistence.database import Database, create_database, initial
 from clockmanager.persistence.models import (
     SCHEMA_VERSION,
     AttendanceEventRecord,
+    AuditEventRecord,
     Base,
     DeviceRecord,
     DeviceUserRecord,
@@ -19,6 +20,7 @@ from clockmanager.persistence.models import (
 __all__ = [
     "SCHEMA_VERSION",
     "AttendanceEventRecord",
+    "AuditEventRecord",
     "Base",
     "Database",
     "DeviceRecord",
