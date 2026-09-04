@@ -192,14 +192,14 @@ class TestCaptureAttendanceSnapshot:
                 build_attendance_record(
                     size=8,
                     uid=1,
-                    occurred_at=datetime(2026, 3, 1, 9, 0, 0),
-                    punch=0,  # noqa: DTZ001
+                    occurred_at=datetime(2026, 3, 1, 9, 0, 0),  # noqa: DTZ001
+                    punch=0,
                 ),
                 build_attendance_record(
                     size=8,
                     uid=2,
-                    occurred_at=datetime(2026, 3, 1, 17, 0, 0),
-                    punch=1,  # noqa: DTZ001
+                    occurred_at=datetime(2026, 3, 1, 17, 0, 0),  # noqa: DTZ001
+                    punch=1,
                 ),
             ]
         )

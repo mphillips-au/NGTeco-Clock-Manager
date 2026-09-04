@@ -2,11 +2,12 @@
 
 ## Current phase
 
-PHASE 10 — Developer diagnostics: **complete**.
+PHASE 11 — Biometric / card investigation: **complete** (investigation only,
+no new device operation implemented).
 
 ## Next phase
 
-PHASE 11 — Biometric / card investigation.
+PHASE 12 — UI polish.
 
 ## What exists now
 
@@ -158,9 +159,14 @@ Known device:
 - Generic pyzk user parsing is not correct for MB1.
 - Generic pyzk user writing is not approved for MB1 and is never used.
 - The credential region's internal layout is unknown.
-- Face/fingerprint template support remains investigation-gated.
-- No card field has been identified; card writing is UNSUPPORTED and cannot be
-  unlocked.
+- Biometric / card work is investigation-gated (PHASE 11): `READ_FINGERPRINT`
+  and `READ_FACE` stay UNVERIFIED, `WRITE_USER_CARD` stays UNSUPPORTED and
+  cannot be unlocked, and the adapter exposes no template/enrollment/card
+  operation. The per-capability evidence map (command, payload, response,
+  structure, confidence, reversibility, test status) is in `PROTOCOL.md`.
+  Nothing was implemented because nothing is proven on the project MB1:
+  no hardware was available in the investigation session, so no packet
+  capture was taken and no disposable test user was exercised.
 
 ## Known limitations of the current build
 

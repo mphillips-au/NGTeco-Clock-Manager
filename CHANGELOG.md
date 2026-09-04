@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+### PHASE 11 — Biometric / Card Investigation (2026-09-04)
+
+Investigation only: no card, fingerprint or face operation was implemented,
+and no capability changed state. Verified against the unit suite; no
+real-device run (no hardware was available in the session).
+
+#### Findings (`PROTOCOL.md`, `RESEARCH.md`)
+
+- Per-capability evidence map in `PROTOCOL.md` under "Biometric / card
+  investigation (PHASE 11)": command, payload, response, structure,
+  confidence, reversibility and test status for presence counters,
+  fingerprint bulk/single read, enrollment, upload/delete, face templates
+  and the card field.
+- `fananimi/pyzk` issue #240 (NG-MB2, same firmware/platform family)
+  reports bulk fingerprint read (`CMD_DB_RRQ`/`FCT_FINGERTMP`) compatible
+  but single-template read (command 88) incompatible and `enroll_user`
+  (`CMD_STARTENROLL`) freezing the device — sibling-model supporting
+  evidence only, not production truth.
+- The single public card-offset claim (bytes 83:87, 4-byte LE) collides
+  with the verified last-name region (59:96) and mis-slices neighbouring
+  fields: very-low-confidence hypothesis. `WRITE_USER_CARD` stays
+  UNSUPPORTED and cannot be unlocked.
+- pyzk 0.9 has no face-template API (presence flags only) and its
+  fingerprint upload embeds the generic 72-byte user packet already proven
+  wrong for the 120-byte MB1 record: nothing to build on.
+- Proving tests are specified per capability (keypad-enrolled disposable
+  user + before/after 120-byte record diff for the card; captured bulk
+  read against a known enrolled finger for templates) for a future
+  hardware session.
+
+#### Tests
+
+- 9 new tests in `tests/unit/test_biometric_investigation.py`: biometric
+  reads stay UNVERIFIED and locked under every write unlock, card writing
+  stays UNSUPPORTED on both devices, neither the adapter nor the mock
+  exposes or calls any template/enrollment/card operation (AST guards),
+  discovery defines none, and `DeviceUser` carries no biometric/card field.
+- Fixed two misplaced `# noqa: DTZ001` comments in the PHASE 10 suites
+  (`test_trace.py`, `test_diagnostics_service.py`): the marker belonged on
+  the deliberate naive-`datetime` fixture line, not the following line.
+  Behaviour unchanged; ruff had flagged them as unused directives.
+- ruff (lint + format) and mypy strict pass clean.
+
 ### PHASE 10 — Developer Diagnostics (2026-09-04)
 
 Admin-only protocol diagnostics, read-only by construction. Verified

@@ -197,6 +197,105 @@ Face/fingerprint support has not been fully reverse engineered.
 Do not implement guesses.
 Investigate using controlled, disposable users and protocol captures.
 
+## Biometric / card investigation (PHASE 11)
+
+Investigation only. No new device operation was implemented: nothing in this
+section is proven on the project MB1, so every capability below keeps the
+state it had before this phase. What follows is the evidence map for the
+controlled device testing that must happen before anything is built.
+
+Method used in this phase: pyzk 0.9 source reading, the pyzk NGTeco issue
+history (notably `fananimi/pyzk` issue #240, NG-MB2 on the same firmware
+`Ver 8.0.4.5-7108-02` and platform `ZMM510_TFT` family), the NG-MB1 user
+manual (4-in-1: face, fingerprint, RFID card, PIN; 200 users / 200 faces /
+400 fingerprints), static offset analysis of the verified 120-byte record,
+and the pre-existing adapter. No real device was available in this session,
+so no packet capture was taken and no disposable test user was exercised.
+Each row records command, payload, response, structure, confidence,
+reversibility and test status.
+
+### Presence (counts, no template content)
+
+`CMD_GET_FREE_SIZES` (pyzk `read_sizes()`) reports `users`, `fingers`,
+`records`, `cards` and `faces` counters. The adapter already surfaces the
+fingerprint and face counters as `DeviceInfo.fingerprint_count` /
+`DeviceInfo.face_count`, and issue #240 marks `read_sizes` compatible on the
+sibling NG-MB2. Confidence: MEDIUM for "the transport returns counters".
+What the counters mean on an MB1 (enrolled templates vs capacity vs
+availability) is UNVERIFIED, and no count has been cross-checked against a
+known enrolled/unenrolled user. Reversibility: read-only, fully safe. Test
+status: counters parsed from fakes/mocks only; needs a real-device read with
+a known biometric state plus `get_face_version` / `get_face_fun_on` /
+`get_fp_version` option reads as corroboration.
+
+### Fingerprint bulk read (candidate, NOT proven)
+
+pyzk `get_templates()`: `CMD_DB_RRQ` (7) with `FCT_FINGERTMP` (2), buffered
+read with a 4-byte total-size prefix; each entry framed as
+`unpack('HHbb', ...)` = size, UID, finger ID, valid flag, followed by
+`size - 6` template bytes. Issue #240 marks it compatible on the NG-MB2.
+Confidence: LOW for the MB1 — sibling-model report only, template byte
+format (finger algorithm 10) unknown, and total-size accounting unconfirmed
+against 120-byte-record devices. Reversibility: read-only, safe. Test
+status: NOT RUN on the project MB1. Required before use: capture a bulk
+read on a device with a known enrolled finger, verify entry framing and UID
+mapping against the 120-byte user list, and confirm templates are never
+logged or persisted (SECURITY.md forbids it).
+
+### Fingerprint single read (evidence: INCOMPATIBLE, do not use)
+
+pyzk `get_user_template()`: command 88 with `pack('hb', uid, temp_id)`,
+up to 3 retries. Issue #240 marks it incompatible on NGTeco ("more testing
+required"). Confidence: MEDIUM that it does not work as-is. Reversibility:
+read-only. Test status: NOT RUN here; do not retry without a capture plan.
+
+### Fingerprint enrollment (evidence: UNSAFE, do not implement)
+
+pyzk `enroll_user()`: `CMD_STARTENROLL` (61), then a 60-second
+socket-blocking multi-round capture loop. Issue #240 reports the device
+shows the enrollment screen and then freezes. Confidence: MEDIUM that the
+generic flow is wrong for this family. Reversibility: NOT REVERSIBLE
+without a delete path, and a freeze risks forcing a power cycle mid-write.
+Test status: NOT RUN here and must not be run until reads are proven. No
+enrollment capability exists and none may be added on this evidence.
+
+### Fingerprint upload / delete (NOT proven, do not implement)
+
+pyzk `save_user_template()` packs the user with the generic 72-byte
+`repack73()` layout, which is already proven incompatible with the 120-byte
+MB1 record (see "Write protocol"), so the whole packet is suspect;
+`delete_user_template()` (command 19, or 134 with a 24-byte user ID on TCP)
+is untested on any NGTeco device in the available reports. Confidence: LOW.
+Reversibility: upload overwrites device state; delete destroys templates.
+Test status: NOT RUN. Both stay absent from the adapter and the interface.
+
+### Face templates (NO KNOWN COMMAND, do not implement)
+
+pyzk 0.9 has no face-template read/write API at all — only presence flags
+(`get_face_version`, `get_face_fun_on` option reads, both marked compatible
+on the NG-MB2). No command, payload or structure is known for face
+enrollment, download, upload or delete on this protocol. Confidence: HIGH
+that there is nothing to implement from. Reversibility: n/a. Test status:
+NOT RUN. Face work needs fresh captures (option reads first, then
+controlled enrollment observation), never code first.
+
+### Card (ONE UNVERIFIED CANDIDATE OFFSET, do not implement)
+
+One public snippet (issue #240, January 2026, brief MB1 access, self
+described as lightly tested) claims the card is a 4-byte little-endian
+value at record bytes 83:87. Against the verified layout that range falls
+inside the last-name region (59:96), the same snippet reads last name as
+59:99 (overlapping the verified user-ID field at 96:120) and reads the card
+from the whole-buffer offset instead of the per-record offset, so the claim
+contradicts verified field boundaries and contains its own packing bugs.
+Confidence: VERY LOW — hypothesis only. The generic pyzk 72-byte record
+does carry a 4-byte card, which proves only that ZKTeco devices *can* store
+one, not where the MB1 stores it. Reversibility: a wrong-offset write would
+corrupt names or credentials. Test status: NOT RUN. `WRITE_USER_CARD`
+stays UNSUPPORTED. The proving test, when hardware is available: enroll a
+card on a disposable user via the device keypad, dump the 120-byte record
+before/after, and diff — implement nothing until the offset survives that.
+
 ## Relevant external research
 
 The pyzk NGTeco MB1 work/issue is an important reference.
