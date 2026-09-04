@@ -37,9 +37,10 @@ from clockmanager.domain.auth import Permission, Role, normalise_role
 from clockmanager.gui.views.common import (
     build_table,
     fill_table,
+    page_header,
     role_allows,
     run_off_thread,
-    section_label,
+    set_status,
 )
 from clockmanager.services.application import ApplicationContext
 from clockmanager.services.devices import ConnectionTestResult, DeviceProfile, DeviceService
@@ -77,6 +78,7 @@ class DiagnosticsView(QWidget):
         self._results = build_table(["Item", "Value"], self, sortable=False)
         self._status = QLabel("Select a check to run.", self)
         self._status.setWordWrap(True)
+        set_status(self._status, "Select a check to run.", "info")
 
         self._buttons = [
             self._make_button("Test connection", self._test_connection),
@@ -165,7 +167,12 @@ class DiagnosticsView(QWidget):
         log_group.setLayout(log_layout)
 
         layout = QVBoxLayout()
-        layout.addWidget(section_label("Diagnostics", self))
+        layout.addWidget(
+            page_header(
+                "Diagnostics",
+                "Connection timings and protocol traces for troubleshooting. Administrators only; exports are sanitised.",
+            )
+        )
         layout.addWidget(checks_group, stretch=1)
         layout.addWidget(detail_group, stretch=1)
         layout.addWidget(log_group, stretch=1)

@@ -15,7 +15,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -29,10 +31,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from clockmanager import APPLICATION_NAME
 from clockmanager.diagnostics.logging_setup import get_logger
 from clockmanager.domain.auth import Role
 from clockmanager.errors import SecurityError
-from clockmanager.gui.views.common import build_table, fill_table, run_off_thread, section_label
+from clockmanager.gui.views.common import (
+    build_table,
+    fill_table,
+    page_header,
+    primary_button,
+    run_off_thread,
+    set_status,
+)
 from clockmanager.services.auth import AuthenticatedUser, AuthService
 
 __all__ = [
@@ -58,6 +68,30 @@ def _combo_role(box: QComboBox) -> Role:
     return Role(str(box.currentData()))
 
 
+#: Where the remembered username is kept. ``QSettings`` is per-user machine
+#: state, not application data: it never touches the attendance database.
+_USERNAME_KEY = "login/username"
+
+
+def _remembered_username() -> str:
+    """Return the stored username, or an empty string."""
+    stored = QSettings().value(_USERNAME_KEY, "")
+    return str(stored) if stored else ""
+
+
+def _remember_username(username: str) -> None:
+    """Store ``username`` for next time, or forget it when empty.
+
+    Only the username is ever written. A password is never stored, so an
+    operator who unticks the box leaves nothing behind.
+    """
+    settings = QSettings()
+    if username.strip():
+        settings.setValue(_USERNAME_KEY, username.strip())
+    else:
+        settings.remove(_USERNAME_KEY)
+
+
 class LoginDialog(QDialog):
     """Ask for credentials and authenticate. Refuses to close on failure."""
 
@@ -67,30 +101,56 @@ class LoginDialog(QDialog):
         self._auth = auth
         self._user: AuthenticatedUser | None = None
 
+        self.setMinimumWidth(400)
+
         self._username = QLineEdit(self)
         self._username.setPlaceholderText("Username")
+        self._username.setAccessibleName("Username")
         self._password = QLineEdit(self)
         self._password.setEchoMode(QLineEdit.EchoMode.Password)
         self._password.setPlaceholderText("Password")
+        self._password.setAccessibleName("Password")
+        # Enter submits from either field, the way every sign-in screen works.
+        self._username.returnPressed.connect(self._on_accept)
+        self._password.returnPressed.connect(self._on_accept)
+
+        # Only the username is remembered, never the password: it saves the
+        # daily operator a keystroke without putting a credential on disk.
+        self._remember = QCheckBox("Remember my username", self)
+        self._remember.setChecked(_remembered_username() != "")
+        self._username.setText(_remembered_username())
+
         self._error = QLabel("", self)
         self._error.setWordWrap(True)
 
         form = QFormLayout()
         form.addRow("Username", self._username)
         form.addRow("Password", self._password)
+        form.addRow("", self._remember)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self
-        )
+        sign_in = primary_button("Sign in", self)
+        cancel = QPushButton("Cancel", self)
+        buttons = QDialogButtonBox(self)
+        buttons.addButton(sign_in, QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons.addButton(cancel, QDialogButtonBox.ButtonRole.RejectRole)
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout()
-        layout.addWidget(QLabel("Log in to NGTeco Clock Manager.", self))
+        layout.setContentsMargins(22, 20, 22, 18)
+        layout.setSpacing(10)
+        layout.addWidget(
+            page_header(
+                f"{APPLICATION_NAME}",
+                "Sign in to manage attendance for your NGTeco clock.",
+            )
+        )
         layout.addLayout(form)
         layout.addWidget(self._error)
         layout.addWidget(buttons)
         self.setLayout(layout)
+        # Land on whichever field the operator still has to fill in.
+        (self._password if self._username.text() else self._username).setFocus()
 
     @property
     def user(self) -> AuthenticatedUser | None:
@@ -100,9 +160,11 @@ class LoginDialog(QDialog):
         try:
             self._user = self._auth.authenticate(self._username.text(), self._password.text())
         except SecurityError as exc:
-            self._error.setText(str(exc))
+            set_status(self._error, str(exc), "error")
             self._password.clear()
+            self._password.setFocus()
             return
+        _remember_username(self._username.text() if self._remember.isChecked() else "")
         self.accept()
 
 
@@ -325,7 +387,7 @@ class UserAccountsView(QWidget):
         self._status = QLabel("Local accounts. Passwords are never shown.", self)
         self._status.setWordWrap(True)
 
-        self._add_button = QPushButton("Add…", self)
+        self._add_button = primary_button("Add account…", self)
         self._add_button.clicked.connect(self._on_add)
         self._role_button = QPushButton("Change role…", self)
         self._role_button.clicked.connect(self._on_role)
@@ -346,7 +408,12 @@ class UserAccountsView(QWidget):
         controls.addWidget(self._refresh_button)
 
         layout = QVBoxLayout()
-        layout.addWidget(section_label("User accounts (administrators only)", self))
+        layout.addWidget(
+            page_header(
+                "User accounts",
+                "Who may sign in to this application, and what each of them is allowed to do. Administrators only.",
+            )
+        )
         layout.addLayout(controls)
         layout.addWidget(self._status)
         layout.addWidget(self._table, stretch=1)

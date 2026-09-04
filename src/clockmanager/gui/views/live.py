@@ -9,9 +9,12 @@ recovered by the next full sync's re-read.
 
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QShortcut
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -23,9 +26,11 @@ from clockmanager.domain.models import AttendanceEvent
 from clockmanager.gui.views.common import (
     build_table,
     fill_table,
+    page_header,
+    primary_button,
     role_allows,
     run_off_thread,
-    section_label,
+    set_status,
 )
 from clockmanager.gui.workers import LiveCaptureWorker
 from clockmanager.services.devices import DeviceService
@@ -63,7 +68,7 @@ class LiveEventsView(QWidget):
 
         self._table = build_table(_HEADERS, self, sortable=False)  # newest-first is meaningful
 
-        self._start_button = QPushButton("Start live capture", self)
+        self._start_button = primary_button("Start live capture", self)
         self._start_button.clicked.connect(self.start)
         if not role_allows(self._role, Permission.LIVE_CAPTURE):
             self._start_button.setEnabled(False)
@@ -79,6 +84,21 @@ class LiveEventsView(QWidget):
 
         self._state = QLabel("Stopped", self)
         self._state.setWordWrap(True)
+        set_status(
+            self._state,
+            "Stopped — press “Start live capture” while the clock is reachable.",
+            "info",
+        )
+
+        self._filter = QLineEdit(self)
+        self._filter.setPlaceholderText("Filter by user ID…  (Ctrl+F)")
+        self._filter.setClearButtonEnabled(True)
+        self._filter.setAccessibleName("Filter live events by user ID")
+        self._filter.textChanged.connect(self._render)
+
+        focus_search = QShortcut("Ctrl+F", self)
+        focus_search.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        focus_search.activated.connect(self._filter.setFocus)
 
         controls = QHBoxLayout()
         controls.addWidget(self._start_button)
@@ -94,12 +114,23 @@ class LiveEventsView(QWidget):
         notice.setWordWrap(True)
 
         layout = QVBoxLayout()
-        layout.addWidget(section_label("Live attendance events", self))
+        layout.addWidget(
+            page_header(
+                "Live events",
+                "Punches as they happen, streamed from the clock. Each one is stored as it arrives.",
+            )
+        )
         layout.addLayout(controls)
         layout.addWidget(self._state)
+        layout.addWidget(self._filter)
         layout.addWidget(self._table, stretch=1)
         layout.addWidget(notice)
         self.setLayout(layout)
+        fill_table(
+            self._table,
+            [],
+            empty_message="No punches yet. Press “Start live capture” and punch at the clock.",
+        )
 
     # -- capture lifecycle ----------------------------------------------------
 
@@ -113,7 +144,11 @@ class LiveEventsView(QWidget):
 
         profile = self._service.first_enabled_profile()
         if profile is None or not profile.is_configured:
-            self._state.setText("No device is configured. Add one in Device settings.")
+            set_status(
+                self._state,
+                "No device is configured. Add one in Device settings.",
+                "warning",
+            )
             return
 
         # Snapshot names once at capture start so per-event storage needs no
@@ -146,7 +181,7 @@ class LiveEventsView(QWidget):
         if worker is None:
             return
         self._stop_button.setEnabled(False)
-        self._state.setText("Stopping…")
+        set_status(self._state, "Stopping…", "loading")
         worker.stop()
 
     def shutdown(self) -> None:
@@ -177,7 +212,7 @@ class LiveEventsView(QWidget):
             ],
         )
         del self._rows[_MAX_ROWS:]
-        fill_table(self._table, self._rows)
+        self._render()
 
     def _store(self, event: AttendanceEvent) -> bool:
         """Persist one live punch without blocking the UI thread.
@@ -203,17 +238,45 @@ class LiveEventsView(QWidget):
         return True
 
     def _on_state(self, state: str) -> None:
-        self._state.setText(state)
+        set_status(self._state, state, "loading" if "…" in state else "info")
 
     def _on_failed(self, message: str) -> None:
-        self._state.setText(message)
+        set_status(self._state, message, "error")
 
     def _on_finished(self) -> None:
         self._worker = None
         self._start_button.setEnabled(role_allows(self._role, Permission.LIVE_CAPTURE))
         self._stop_button.setEnabled(False)
+        if self._rows:
+            set_status(
+                self._state,
+                f"Stopped — {len(self._rows)} event(s) captured. Anything missed "
+                "is picked up by the next sync.",
+                "success",
+            )
+        else:
+            set_status(self._state, "Stopped — no events arrived.", "info")
+
+    def _render(self) -> None:
+        """Show rows matching the filter, with an empty state when none do."""
+        needle = self._filter.text().strip().lower()
+        shown = [row for row in self._rows if not needle or needle in row[1].lower()]
+        fill_table(
+            self._table,
+            shown,
+            empty_message=(
+                "No events match the current filter."
+                if self._rows
+                else "No punches yet. Press “Start live capture” and punch at the clock."
+            ),
+        )
 
     def _clear(self) -> None:
         self._rows.clear()
         self._sequence = 0
-        fill_table(self._table, [])
+        fill_table(
+            self._table,
+            [],
+            empty_message="List cleared. New punches appear here while capture is running.",
+        )
+        set_status(self._state, "Stopped — list cleared.", "info")

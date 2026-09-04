@@ -8,7 +8,7 @@ real user ID and no credential of any kind.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from struct import pack
 
 from clockmanager.domain.models import AttendanceEvent, DeviceUser
@@ -55,8 +55,18 @@ def sample_attendance(
     """Build a plausible IN/OUT history for ``users``.
 
     Times are naive, matching what a device reports.
+
+    With no ``reference``, the history ends today: running the application
+    against the mock device then shows a populated dashboard and a week of
+    trend, the way it looks against a real clock in daily use. Callers that
+    need stable timestamps pass ``reference`` explicitly.
     """
-    start = reference if reference is not None else datetime(2026, 3, 2, 8, 0, 0)  # noqa: DTZ001
+    if reference is not None:
+        start = reference
+    else:
+        today = date.today()  # noqa: DTZ011 - device-local business day, not a timestamp
+        first_day = today - timedelta(days=days - 1)
+        start = datetime(first_day.year, first_day.month, first_day.day, 8, 0, 0)  # noqa: DTZ001
     events: list[AttendanceEvent] = []
 
     for day in range(days):

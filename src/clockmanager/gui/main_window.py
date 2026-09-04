@@ -13,19 +13,25 @@ from dataclasses import dataclass
 from typing import Any
 
 from PySide6.QtCore import QSize, QThreadPool, QTimer
+from PySide6.QtGui import QActionGroup, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QHBoxLayout,
+    QLabel,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QStackedWidget,
+    QVBoxLayout,
     QWidget,
 )
 
 from clockmanager import APPLICATION_NAME, __version__
 from clockmanager.diagnostics.logging_setup import get_logger
 from clockmanager.domain.auth import Role
+from clockmanager.gui.icons import avatar_pixmap, nav_icon
+from clockmanager.gui.theme import ThemeName, current_palette, current_theme, set_theme
 from clockmanager.gui.views import (
     AttendanceView,
     AuditView,
@@ -87,6 +93,10 @@ def visible_views_for(role: Role | None) -> frozenset[str]:
     return _VIEWER_VIEWS
 
 
+#: Sidebar row height in pixels.
+_NAV_ROW_HEIGHT = 34
+
+
 @dataclass(frozen=True, slots=True)
 class _NavigationEntry:
     label: str
@@ -117,7 +127,7 @@ class MainWindow(QMainWindow):
         self._users_service = context.users
         role = self._role
 
-        self.dashboard_view = DashboardView(context, self._service, self)
+        self.dashboard_view = DashboardView(context, self._service, self, role=role)
         self.users_view = UsersView(self._service, self._users_service, self, role=role)
         self.attendance_view = AttendanceView(self._service, self._sync_service, self, role=role)
         self.live_view = LiveEventsView(self._service, self._sync_service, self, role=role)
@@ -156,21 +166,73 @@ class MainWindow(QMainWindow):
         self._entries = [entry for entry in all_entries if entry.label in visible]
 
         self._navigation = QListWidget(self)
-        self._navigation.setMaximumWidth(200)
-        self._navigation.setIconSize(QSize(16, 16))
-        for entry in self._entries:
-            self._navigation.addItem(QListWidgetItem(entry.label))
+        self._navigation.setObjectName("Navigation")
+        self._navigation.setMaximumWidth(210)
+        self._navigation.setIconSize(QSize(18, 18))
+        self._navigation.setAccessibleName("Sections")
+        self._navigation.setUniformItemSizes(True)
+        for position, entry in enumerate(self._entries, start=1):
+            item = QListWidgetItem(entry.label)
+            item.setIcon(nav_icon(entry.label, current_palette().text_muted))
+            # A fixed row height keeps the sidebar compact and predictable
+            # instead of letting the platform style pick a size per row.
+            item.setSizeHint(QSize(0, _NAV_ROW_HEIGHT))
+            if position <= 9:
+                item.setToolTip(f"{entry.label} (Ctrl+{position})")
+            self._navigation.addItem(item)
         self._navigation.currentRowChanged.connect(self._on_navigate)
+        self._install_navigation_shortcuts()
 
         self._stack = QStackedWidget(self)
         for entry in self._entries:
             self._stack.addWidget(entry.widget)
 
+        sidebar = QWidget(self)
+        sidebar.setObjectName("Sidebar")
+        sidebar.setMinimumWidth(185)
+        sidebar.setMaximumWidth(225)
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(12, 16, 12, 12)
+        sidebar_layout.setSpacing(8)
+        brand = QLabel("NGTECO\nClock Manager", sidebar)
+        brand.setObjectName("SidebarBrand")
+        brand.setAccessibleName("NGTeco Clock Manager")
+        role_label = QLabel(self._workspace_description(), sidebar)
+        role_label.setObjectName("SidebarRole")
+        role_label.setWordWrap(True)
+        sidebar_layout.addWidget(brand)
+        sidebar_layout.addWidget(role_label)
+        sidebar_layout.addWidget(self._navigation, stretch=1)
+        # Who is signed in, kept in view at all times: an operator should
+        # never have to guess whether they are in the administrator or the
+        # office workspace before touching a device control.
+        if self._current_user is not None:
+            name = self._current_user.display_name or self._current_user.username
+            identity = QLabel(f"{name}\n{self._current_user.role.label}", sidebar)
+            identity.setObjectName("SidebarRole")
+            identity.setWordWrap(True)
+            identity.setAccessibleName(
+                f"Signed in as {self._current_user.username}, {self._current_user.role.label}"
+            )
+            palette = current_palette()
+            avatar = QLabel(sidebar)
+            avatar.setPixmap(avatar_pixmap(name, palette.accent, palette.accent_text, size=30))
+            avatar.setFixedSize(30, 30)
+            identity_row = QHBoxLayout()
+            identity_row.setContentsMargins(0, 6, 0, 0)
+            identity_row.setSpacing(8)
+            identity_row.addWidget(avatar)
+            identity_row.addWidget(identity, stretch=1)
+            sidebar_layout.addLayout(identity_row)
+
         layout = QHBoxLayout()
-        layout.addWidget(self._navigation)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(sidebar)
         layout.addWidget(self._stack, stretch=1)
 
         central = QWidget(self)
+        central.setObjectName("MainContent")
         central.setLayout(layout)
         self.setCentralWidget(central)
 
@@ -215,6 +277,16 @@ class MainWindow(QMainWindow):
 
         run_off_thread(_work, on_success=_done, on_failure=_failed)
 
+    def _install_navigation_shortcuts(self) -> None:
+        """Ctrl+1…Ctrl+9 jump straight to a section.
+
+        Daily users move between Dashboard, Attendance and Reports constantly;
+        a keyboard route matters more here than anywhere else in the product.
+        """
+        for position, entry in enumerate(self._entries[:9], start=1):
+            shortcut = QShortcut(QKeySequence(f"Ctrl+{position}"), self)
+            shortcut.activated.connect(lambda label=entry.label: self.show_view(label))
+
     # -- navigation -----------------------------------------------------------
 
     @property
@@ -230,9 +302,24 @@ class MainWindow(QMainWindow):
                 return
         self.statusBar().showMessage(f"{label} is not available for your role.")
 
+    def _repaint_navigation_icons(self) -> None:
+        """Draw the selected row's icon light and the rest muted.
+
+        The stylesheet cannot recolour a pixmap, so the icon is redrawn when
+        the selection moves; at twelve rows this is far cheaper than keeping
+        two icon sets alive per theme.
+        """
+        palette = current_palette()
+        current = self._navigation.currentRow()
+        for row, entry in enumerate(self._entries):
+            item = self._navigation.item(row)
+            colour = palette.accent_text if row == current else palette.text_muted
+            item.setIcon(nav_icon(entry.label, colour))
+
     def _on_navigate(self, row: int) -> None:
         if not 0 <= row < len(self._entries):
             return
+        self._repaint_navigation_icons()
         entry = self._entries[row]
         self._stack.setCurrentWidget(entry.widget)
         self.statusBar().showMessage(entry.label)
@@ -284,6 +371,18 @@ class MainWindow(QMainWindow):
                 lambda _checked=False, label=entry.label: self.show_view(label)
             )
 
+        appearance_menu = view_menu.addMenu("Appearance")
+        theme_group = QActionGroup(self)
+        theme_group.setExclusive(True)
+        for label, name in (("Light", "light"), ("Dark", "dark")):
+            action = appearance_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(current_theme() == name)
+            theme_group.addAction(action)
+            action.triggered.connect(
+                lambda _checked=False, selected=name: self._change_theme(selected)
+            )
+
         help_menu = self.menuBar().addMenu("&Help")
         about_action = help_menu.addAction("&About")
         about_action.triggered.connect(self._show_about)
@@ -294,6 +393,24 @@ class MainWindow(QMainWindow):
             developer_menu = self.menuBar().addMenu("&Developer")
             schema_action = developer_menu.addAction("Database &metadata")
             schema_action.triggered.connect(self._show_schema_info)
+
+    def _workspace_description(self) -> str:
+        """Name the operator workspace without exposing restricted tools."""
+        if self._role == Role.ADMIN:
+            return "Administrator workspace\nDevice and security tools available"
+        if self._role == Role.OFFICE_STAFF:
+            return "Office workspace\nDevice and developer tools are restricted"
+        if self._role == Role.VIEWER:
+            return "Read-only workspace"
+        return "Local setup workspace"
+
+    def _change_theme(self, name: ThemeName) -> None:
+        """Apply a user-selected appearance immediately and persist it."""
+        app = QApplication.instance()
+        if isinstance(app, QApplication):
+            set_theme(app, name)
+        # Painted artwork carries no stylesheet, so it is redrawn by hand.
+        self._repaint_navigation_icons()
 
     @property
     def logout_requested(self) -> bool:

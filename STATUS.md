@@ -2,12 +2,13 @@
 
 ## Current phase
 
-PHASE 11 — Biometric / card investigation: **complete** (investigation only,
-no new device operation implemented).
+PHASE 12 — UI polish: **complete**. Presentation only; no service, protocol,
+persistence or permission behaviour changed.
 
 ## Next phase
 
-PHASE 12 — UI polish.
+Not yet chosen. Candidates: packaging/installer for Windows, multi-device
+support, or the headless Synology service.
 
 ## What exists now
 
@@ -52,7 +53,15 @@ Layer separation is in place and enforced by tests:
 - `clockmanager.security` — redaction helpers
 - `clockmanager.diagnostics` — structured JSON logging with a redacting filter
   on every handler
-- `clockmanager.gui` — PySide6 application: navigation shell plus Dashboard,
+- `clockmanager.gui` — PySide6 application. `theme.py` holds one `Palette`
+  per light/dark theme and generates the whole stylesheet from those tokens;
+  `icons.py` draws navigation icons and initials avatars at runtime (no image
+  assets); `views/common.py` holds the shared page header, table, empty-state,
+  confirmation and toast helpers every view uses; `views/charts.py` paints the
+  dashboard trend with no charting dependency. Focus rings appear only for
+  keyboard navigation (`FocusVisibilityFilter` in `app.py`). The theme choice
+  lives in `QSettings`, as does the optional remembered login username — never
+  a password. Navigation shell plus Dashboard,
   Users, Attendance, Live events, Employees, Timesheets, Reports, Device settings,
   Audit log, Diagnostics and Backup
   views; the only subpackage allowed to import PySide6. Device settings hosts

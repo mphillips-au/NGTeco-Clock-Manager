@@ -41,6 +41,19 @@ def test_window_title_includes_application_name(
         window.close()
 
 
+def test_application_theme_and_navigation_object_names_are_applied(
+    qt_app: QApplication, mock_context: ApplicationContext
+) -> None:
+    """The shared QSS must be active and target the actual navigation widget."""
+    window = MainWindow(mock_context)
+    try:
+        drain(qt_app)
+        assert "QMainWindow" in qt_app.styleSheet()
+        assert window._navigation.objectName() == "Navigation"
+    finally:
+        window.close()
+
+
 def test_all_expected_views_are_present(
     qt_app: QApplication, mock_context: ApplicationContext
 ) -> None:

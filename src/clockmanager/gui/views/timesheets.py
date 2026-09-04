@@ -21,7 +21,14 @@ from PySide6.QtWidgets import (
 )
 
 from clockmanager.domain.payroll import format_hours
-from clockmanager.gui.views.common import build_table, fill_table, run_off_thread, section_label
+from clockmanager.gui.views.common import (
+    build_table,
+    fill_table,
+    page_header,
+    primary_button,
+    run_off_thread,
+    set_status,
+)
 from clockmanager.services.employees import EmployeeProfile, EmployeeService
 from clockmanager.services.timesheets import TimesheetRequest, TimesheetService
 
@@ -48,7 +55,7 @@ class TimesheetsView(QWidget):
         self._period_box = QComboBox(self)
         self._period_box.addItem("Current pay period", "current")
         self._period_box.addItem("Previous pay period", "previous")
-        self._calculate_button = QPushButton("Calculate", self)
+        self._calculate_button = primary_button("Calculate", self)
         self._calculate_button.clicked.connect(self.calculate)
         self._refresh_button = QPushButton("Refresh employees", self)
         self._refresh_button.clicked.connect(self.load_employees)
@@ -68,12 +75,22 @@ class TimesheetsView(QWidget):
         controls.addWidget(self._refresh_button)
 
         layout = QVBoxLayout()
-        layout.addWidget(section_label("Timesheets (derived from stored attendance)", self))
+        layout.addWidget(
+            page_header(
+                "Timesheets",
+                "Hours worked, derived from stored punches. The underlying attendance is never altered.",
+            )
+        )
         layout.addLayout(controls)
         layout.addWidget(self._status)
         layout.addWidget(self._totals)
         layout.addWidget(self._table, stretch=1)
         self.setLayout(layout)
+        fill_table(
+            self._table,
+            [],
+            empty_message="Pick an employee and a period, then press Calculate.",
+        )
 
     def load_employees(self) -> None:
         run_off_thread(
@@ -85,12 +102,12 @@ class TimesheetsView(QWidget):
     def calculate(self) -> None:
         index = self._employee_box.currentIndex()
         if index < 0 or index >= len(self._profiles):
-            self._status.setText("Add an employee first, then calculate.")
+            set_status(self._status, "Add an employee first, then calculate.", "warning")
             return
         profile = self._profiles[index]
         which = self._period_box.currentData()
         self._calculate_button.setEnabled(False)
-        self._status.setText(f"Calculating timesheet for {profile.display_name}…")
+        set_status(self._status, f"Calculating timesheet for {profile.display_name}…", "loading")
         run_off_thread(
             lambda: self._build(profile, which),
             on_success=self._on_calculated,
@@ -154,11 +171,17 @@ class TimesheetsView(QWidget):
                     flags,
                 ]
             )
-        fill_table(self._table, rows)
+        fill_table(
+            self._table,
+            rows,
+            empty_message="No worked days in this period for this employee.",
+        )
         period = summary.period
-        self._status.setText(
+        set_status(
+            self._status,
             f"{profile.display_name}: pay period {period.start.isoformat()} to "
-            f"{period.end.isoformat()} ({schedule.schedule_type}, {schedule.timezone})."
+            f"{period.end.isoformat()} ({schedule.schedule_type}, {schedule.timezone}).",
+            "success",
         )
         self._totals.setText(
             "Total "
@@ -172,4 +195,4 @@ class TimesheetsView(QWidget):
 
     def _on_failure(self, message: str) -> None:
         self._calculate_button.setEnabled(True)
-        self._status.setText(message)
+        set_status(self._status, message, "error")

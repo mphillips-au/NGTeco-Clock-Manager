@@ -11,12 +11,13 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication
 
 from clockmanager.config import AppConfig, AppPaths
 from clockmanager.domain.models import DeviceUser, Privilege
 from clockmanager.domain.users import CredentialAction
 from clockmanager.gui.views import AuditView, UserFormDialog, UsersView
+from clockmanager.gui.views import users as users_view
 from clockmanager.services.application import ApplicationContext, bootstrap
 from clockmanager.services.audit import AuditAction, AuditOutcome, AuditService
 from clockmanager.services.devices import DeviceProfile
@@ -180,9 +181,7 @@ class TestUsersViewWithWritesEnabled:
             writable_context.users.list_users(writable_context.devices.first_enabled_profile())
         )
 
-        monkeypatch.setattr(
-            QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.StandardButton.No)
-        )
+        monkeypatch.setattr(users_view, "confirm", lambda *a, **k: False)
         view._table.selectRow(0)
         view._delete_user()
         drain(qt_app)
@@ -199,9 +198,7 @@ class TestUsersViewWithWritesEnabled:
     ) -> None:
         view = self._loaded(qt_app, writable_context)
 
-        monkeypatch.setattr(
-            QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
-        )
+        monkeypatch.setattr(users_view, "confirm", lambda *a, **k: True)
         view._table.selectRow(0)
         selected = view._selected_user()
         assert selected is not None
@@ -225,19 +222,31 @@ class TestUsersViewWithWritesEnabled:
         # The view reloads the list afterwards, so the audit entry rather than
         # the transient status text is what is asserted here.
 
-    def test_filter_and_admins_only_narrow_the_list(
+    def test_search_and_privilege_filters_narrow_the_list(
         self, qt_app: QApplication, writable_context: ApplicationContext
     ) -> None:
         view = self._loaded(qt_app, writable_context)
         total = view._table.rowCount()
 
-        view._admins_only.setChecked(True)
+        view._privilege.setCurrentIndex(view._privilege.findData("Admin"))
         admins = view._table.rowCount()
         assert 0 < admins < total
 
-        view._admins_only.setChecked(False)
+        view._privilege.setCurrentIndex(view._privilege.findData(""))
         view._filter.setText("Hopper")
         assert view._table.rowCount() == 1
+
+    def test_pin_filter_shows_only_enrolled_users(
+        self, qt_app: QApplication, writable_context: ApplicationContext
+    ) -> None:
+        """The sample users carry no credential data, so the filter empties
+        the list rather than quietly showing everyone."""
+        view = self._loaded(qt_app, writable_context)
+        with_pin = [user for user in view._users if user.has_credential_data]
+
+        view._pin_only.setChecked(True)
+
+        assert len(view._visible) == len(with_pin)
 
 
 class TestAuditView:
