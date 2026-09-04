@@ -30,9 +30,16 @@ from PySide6.QtWidgets import (
 )
 
 from clockmanager.diagnostics.logging_setup import get_logger
+from clockmanager.domain.auth import Permission, Role, normalise_role
 from clockmanager.domain.models import DeviceUser
 from clockmanager.domain.users import UserDraft, UserWriteOutcome
-from clockmanager.gui.views.common import build_table, fill_table, run_off_thread, section_label
+from clockmanager.gui.views.common import (
+    build_table,
+    fill_table,
+    role_allows,
+    run_off_thread,
+    section_label,
+)
 from clockmanager.gui.views.user_form import UserFormDialog
 from clockmanager.services.devices import DeviceProfile, DeviceService
 from clockmanager.services.users import DeleteImpact, UserService
@@ -52,10 +59,15 @@ class UsersView(QWidget):
         service: DeviceService,
         users: UserService,
         parent: QWidget | None = None,
+        *,
+        role: Role | str | None = None,
     ) -> None:
         super().__init__(parent)
         self._service = service
         self._users_service = users
+        #: The logged-in role. ``None`` is the pre-login/test path and keeps
+        #: the legacy behaviour; the service layer refuses regardless.
+        self._role = normalise_role(role) if role is not None else None
         self._users: list[DeviceUser] = []
         self._visible: list[DeviceUser] = []
 
@@ -114,6 +126,13 @@ class UsersView(QWidget):
     # -- state ----------------------------------------------------------------
 
     def _refresh_write_availability(self) -> None:
+        if not role_allows(self._role, Permission.MANAGE_DEVICE_USERS):
+            label = self._role.label if self._role is not None else "this role"
+            self._write_notice.setText(
+                f"Your role ({label}) cannot change device users. "
+                "Only administrators may add, edit or delete them."
+            )
+            return
         availability = self._users_service.write_availability()
         self._write_notice.setText(
             availability.reason
@@ -145,10 +164,11 @@ class UsersView(QWidget):
 
     def _update_buttons(self) -> None:
         availability = self._users_service.write_availability()
+        permitted = role_allows(self._role, Permission.MANAGE_DEVICE_USERS)
         has_selection = self._selected_user() is not None
-        self._add_button.setEnabled(availability.users)
-        self._edit_button.setEnabled(availability.users and has_selection)
-        self._delete_button.setEnabled(availability.users and has_selection)
+        self._add_button.setEnabled(availability.users and permitted)
+        self._edit_button.setEnabled(availability.users and permitted and has_selection)
+        self._delete_button.setEnabled(availability.users and permitted and has_selection)
 
     # -- reads ----------------------------------------------------------------
 
@@ -243,7 +263,7 @@ class UsersView(QWidget):
         self._set_busy(True)
         self._status.setText("Writing to the device and verifying…")
         run_off_thread(
-            lambda: self._users_service.save_user(profile, draft),
+            lambda: self._users_service.save_user(profile, draft, requester_role=self._role),
             on_success=self._on_saved,
             on_failure=self._on_failure,
         )
@@ -316,7 +336,9 @@ class UsersView(QWidget):
         self._set_busy(True)
         self._status.setText("Deleting and verifying…")
         run_off_thread(
-            lambda: self._users_service.delete_user(profile, device_uid, confirmed=True),
+            lambda: self._users_service.delete_user(
+                profile, device_uid, confirmed=True, requester_role=self._role
+            ),
             on_success=self._on_deleted,
             on_failure=self._on_failure,
         )

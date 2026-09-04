@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from clockmanager.diagnostics.logging_setup import get_logger
+from clockmanager.domain.auth import Permission, Role, require
 from clockmanager.domain.models import AttendanceEvent, describe_punch
 from clockmanager.errors import ClockManagerError
 from clockmanager.persistence.database import Database
@@ -234,8 +235,17 @@ class SyncService:
         """Re-read the whole log and store only what is new."""
         return self._run(profile, source=SyncSource.HISTORICAL, mode="incremental")
 
-    def manual_sync(self, profile: DeviceProfile) -> SyncResult:
-        """Operator-triggered sync from the GUI."""
+    def manual_sync(
+        self, profile: DeviceProfile, *, requester_role: Role | str | None = None
+    ) -> SyncResult:
+        """Operator-triggered sync from the GUI.
+
+        ``requester_role`` enforces PHASE 07 roles (admin or office staff).
+        ``None`` keeps the path for callers without an interactive identity
+        (tests, headless); the GUI always passes the logged-in role.
+        """
+        if requester_role is not None:
+            require(requester_role, Permission.SYNC_ATTENDANCE)
         return self._run(profile, source=SyncSource.MANUAL, mode="manual")
 
     def background_sync(self, profile: DeviceProfile) -> SyncResult:
@@ -252,14 +262,20 @@ class SyncService:
         """First sync after an offline period: re-read everything missed."""
         return self._run(profile, source=SyncSource.RECOVERY, mode="recovery")
 
-    def record_live_event(self, profile: DeviceProfile, event: AttendanceEvent) -> bool:
+    def record_live_event(
+        self,
+        profile: DeviceProfile,
+        event: AttendanceEvent,
+        *,
+        requester_role: Role | str | None = None,
+    ) -> bool:
         """Store one live-capture punch. Returns ``True`` when it was new.
 
         Live punches never raise for duplicates: a punch already picked up by
         a full sync is simply skipped. Unknown user IDs are stored with no
         employee snapshot rather than dropped.
         """
-        return self.record_live_events(profile, [event]) == 1
+        return self.record_live_events(profile, [event], requester_role=requester_role) == 1
 
     def record_live_events(
         self,
@@ -267,8 +283,11 @@ class SyncService:
         events: list[AttendanceEvent],
         *,
         users_by_id: dict[str, str] | None = None,
+        requester_role: Role | str | None = None,
     ) -> int:
         """Store live-capture punches, returning how many were new."""
+        if requester_role is not None:
+            require(requester_role, Permission.LIVE_CAPTURE)
         device_id = self._require_device_id(profile)
         if not events:
             return 0
@@ -375,6 +394,7 @@ class SyncService:
         is_recovery = was_failing and source != SyncSource.RECOVERY
         if is_recovery:
             effective_source = SyncSource.RECOVERY
+        self._devices.mark_seen(profile)
         self._record_history(
             profile,
             device_id,

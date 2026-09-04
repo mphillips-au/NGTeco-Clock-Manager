@@ -24,8 +24,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from clockmanager.domain.auth import Permission, Role, normalise_role
 from clockmanager.domain.payroll import Employee
-from clockmanager.gui.views.common import build_table, fill_table, run_off_thread, section_label
+from clockmanager.gui.views.common import (
+    build_table,
+    fill_table,
+    role_allows,
+    run_off_thread,
+    section_label,
+)
 from clockmanager.services.employees import EmployeeProfile, EmployeeService
 
 __all__ = ["EmployeeFormDialog", "EmployeesView"]
@@ -106,9 +113,18 @@ class EmployeeFormDialog(QDialog):
 class EmployeesView(QWidget):
     """Lists employees with add/edit/(de)activate."""
 
-    def __init__(self, service: EmployeeService, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        service: EmployeeService,
+        parent: QWidget | None = None,
+        *,
+        role: Role | str | None = None,
+    ) -> None:
         super().__init__(parent)
         self._service = service
+        #: The logged-in role. Viewers are read-only; ``None`` keeps the
+        #: legacy behaviour for tests.
+        self._role = normalise_role(role) if role is not None else None
         self._employees: list[EmployeeProfile] = []
 
         self._table = build_table(_HEADERS, self)
@@ -141,6 +157,13 @@ class EmployeesView(QWidget):
         layout.addWidget(self._status)
         layout.addWidget(self._table, stretch=1)
         self.setLayout(layout)
+        if not role_allows(self._role, Permission.MANAGE_EMPLOYEES):
+            label = self._role.label if self._role is not None else "this role"
+            self._status.setText(
+                f"Your role ({label}) is read-only here. "
+                "Only office staff and administrators may change employees."
+            )
+            self._add_button.setEnabled(False)
 
     def load(self) -> None:
         run_off_thread(
@@ -159,8 +182,9 @@ class EmployeesView(QWidget):
     def _on_selection(self) -> None:
         selected = self._selected()
         has_selection = selected is not None
-        self._edit_button.setEnabled(has_selection)
-        self._toggle_button.setEnabled(has_selection)
+        permitted = role_allows(self._role, Permission.MANAGE_EMPLOYEES)
+        self._edit_button.setEnabled(has_selection and permitted)
+        self._toggle_button.setEnabled(has_selection and permitted)
         if selected is not None:
             self._toggle_button.setText("Reactivate" if not selected.active else "Deactivate")
 
@@ -170,7 +194,7 @@ class EmployeesView(QWidget):
             return
         draft = dialog.employee
         run_off_thread(
-            lambda: self._service.create(draft),
+            lambda: self._service.create(draft, requester_role=self._role),
             on_success=lambda _: self.load(),
             on_failure=self._on_failure,
         )
@@ -184,7 +208,7 @@ class EmployeesView(QWidget):
             return
         draft = dialog.employee
         run_off_thread(
-            lambda: self._service.update(selected.employee_id, draft),
+            lambda: self._service.update(selected.employee_id, draft, requester_role=self._role),
             on_success=lambda _: self.load(),
             on_failure=self._on_failure,
         )
@@ -194,7 +218,11 @@ class EmployeesView(QWidget):
         if selected is None:
             return
         run_off_thread(
-            lambda: self._service.set_active(selected.employee_id, active=not selected.active),
+            lambda: self._service.set_active(
+                selected.employee_id,
+                active=not selected.active,
+                requester_role=self._role,
+            ),
             on_success=lambda _: self.load(),
             on_failure=self._on_failure,
         )
@@ -205,6 +233,8 @@ class EmployeesView(QWidget):
         self._employees = employees
         actives = sum(1 for e in employees if e.active)
         self._status.setText(f"{len(employees)} employee(s), {actives} active.")
+        if not role_allows(self._role, Permission.MANAGE_EMPLOYEES):
+            self._status.setText(self._status.text() + " Read-only for your role.")
         self._apply_filter()
         self._on_selection()
 

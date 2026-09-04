@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from clockmanager.diagnostics.logging_setup import get_logger
+from clockmanager.domain.auth import Permission, Role, require
 from clockmanager.domain.payroll import Employee
 from clockmanager.errors import ClockManagerError
 from clockmanager.persistence.database import Database
@@ -82,7 +83,14 @@ class EmployeeService:
 
     # -- writes ---------------------------------------------------------------
 
-    def create(self, employee: Employee) -> EmployeeProfile:
+    def create(
+        self, employee: Employee, *, requester_role: Role | str | None = None
+    ) -> EmployeeProfile:
+        """Create an employee. ``requester_role`` enforces PHASE 07 roles
+        (admin or office staff); ``None`` keeps the legacy path for callers
+        without an interactive identity."""
+        if requester_role is not None:
+            require(requester_role, Permission.MANAGE_EMPLOYEES)
         with self._database.session() as session:
             repo = EmployeeRepository(session)
             if repo.get_by_user_id(employee.user_id) is not None:
@@ -111,7 +119,15 @@ class EmployeeService:
         _logger.info("Created employee", extra={"user_id": employee.user_id})
         return profile
 
-    def update(self, employee_id: int, employee: Employee) -> EmployeeProfile:
+    def update(
+        self,
+        employee_id: int,
+        employee: Employee,
+        *,
+        requester_role: Role | str | None = None,
+    ) -> EmployeeProfile:
+        if requester_role is not None:
+            require(requester_role, Permission.MANAGE_EMPLOYEES)
         with self._database.session() as session:
             repo = EmployeeRepository(session)
             row = repo.get(employee_id)
@@ -140,7 +156,15 @@ class EmployeeService:
         )
         return profile
 
-    def set_active(self, employee_id: int, *, active: bool) -> EmployeeProfile:
+    def set_active(
+        self,
+        employee_id: int,
+        *,
+        active: bool,
+        requester_role: Role | str | None = None,
+    ) -> EmployeeProfile:
+        if requester_role is not None:
+            require(requester_role, Permission.MANAGE_EMPLOYEES)
         with self._database.session() as session:
             repo = EmployeeRepository(session)
             row = repo.get(employee_id)
@@ -158,9 +182,17 @@ class EmployeeService:
         return profile
 
     def link_device(
-        self, employee_id: int, *, device_id: int, user_id: str, device_uid: int | None = None
+        self,
+        employee_id: int,
+        *,
+        device_id: int,
+        user_id: str,
+        device_uid: int | None = None,
+        requester_role: Role | str | None = None,
     ) -> EmployeeProfile:
         """Map an employee to a (device, user ID) pair on another clock."""
+        if requester_role is not None:
+            require(requester_role, Permission.MANAGE_EMPLOYEES)
         if not user_id.strip():
             raise ClockManagerError("Device user ID must not be empty.")
         with self._database.session() as session:
@@ -194,7 +226,15 @@ class EmployeeService:
         )
         return profile
 
-    def unlink_device(self, employee_id: int, *, device_id: int) -> EmployeeProfile | None:
+    def unlink_device(
+        self,
+        employee_id: int,
+        *,
+        device_id: int,
+        requester_role: Role | str | None = None,
+    ) -> EmployeeProfile | None:
+        if requester_role is not None:
+            require(requester_role, Permission.MANAGE_EMPLOYEES)
         with self._database.session() as session:
             repo = EmployeeRepository(session)
             row = repo.get(employee_id)

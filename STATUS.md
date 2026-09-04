@@ -2,11 +2,12 @@
 
 ## Current phase
 
-PHASE 06 — Reports / exports: **complete**.
+PHASE 09 — Backup / offline resilience: **complete** (PHASE 08 — Device
+management / discovery also complete in this build).
 
 ## Next phase
 
-PHASE 07 — Roles / audit.
+PHASE 10 — Polish / packaging.
 
 ## What exists now
 
@@ -29,13 +30,18 @@ Layer separation is in place and enforced by tests:
   `WritableUserDevice` interfaces, `NGTecoMB1Device`,
   `DeviceConnectionSettings`, the 120-byte user parser **and builder**,
   attendance and live-event parsers, capability model, retry/reconnect,
-  structured exceptions, and `MockAttendanceDevice`
+  structured exceptions, `MockAttendanceDevice`, plus read-only LAN
+  discovery (`protocol/discovery.py`: TCP probe, subnet scan, safe
+  connect-read-disconnect identification — no write operation exists there)
 - `clockmanager.sync` — deterministic event keys (SHA-256 over the natural
   key), pure reconciliation planning and the `SyncSource`
   (`historical`/`manual`/`live`/`background`/`recovery`) vocabulary
 - `clockmanager.services` — `bootstrap()`, `ApplicationContext`,
-  `ApplicationStatus`, `DeviceService`, `UserService`, `AuditService`,
-  `SyncService`, `EmployeeService`, `TimesheetService`, `ReportService`,
+  `ApplicationStatus`, `DeviceService` (profiles, last-seen stamps,
+  per-device status, discovery wrappers, explicit `register_discovered`),
+  `UserService`, `AuditService`, `AuthService`, `SyncService`,
+  `EmployeeService`, `TimesheetService`, `ReportService`, `BackupService`
+  (zip backup, preview/validation, confirmed restore, offline report),
   `MockDeviceFactory`
 - `clockmanager.domain.reports` — `ReportType` (8 kinds), `ReportFilter`,
   `Report`, `ExportFormat` (CSV/XLSX/PDF/JSON) plus dependency-free
@@ -45,8 +51,10 @@ Layer separation is in place and enforced by tests:
   on every handler
 - `clockmanager.gui` — PySide6 application: navigation shell plus Dashboard,
   Users, Attendance, Live events, Employees, Timesheets, Reports, Device settings,
-  Audit log and Diagnostics
-  views; the only subpackage allowed to import PySide6
+  Audit log, Diagnostics and Backup
+  views; the only subpackage allowed to import PySide6. Device settings hosts
+  read-only discovery (check one address, scan the LAN, register by name);
+  Backup (admin-only) creates/previews/restores backups and shows offline status.
 
 Entry point `clockmanager` starts the GUI; `clockmanager --headless` runs the
 same bootstrap without importing PySide6.
@@ -56,10 +64,16 @@ built-in mock device with no hardware attached. The mock now keeps its contents
 for the life of the application context, so the write path can be exercised end
 to end without a clock.
 
-Database schema version 5: `schema_info`, `devices`, `device_users`,
+Database schema version 7: `schema_info`, `devices`, `device_users`,
 `attendance_events`, `audit_events`, `sync_history`, `employees`,
-`employee_device_links`, `pay_schedules`. No user credential, card or biometric
-column exists in any of them.
+`employee_device_links`, `pay_schedules`, `app_users`. No user credential, card or biometric
+column exists in any of them; `app_users.password_hash` holds a salted
+PBKDF2 hash only (second allowed sensitive column alongside the device
+communication password — see `SECURITY.md`).
+
+Schema 6 (`app_users`) is PHASE 07. Schema 7 adds `devices.last_seen_at`
+(PHASE 08): the last successful contact, stamped by connection tests and
+successful syncs, `None` until a device answers.
 
 ## User management (PHASE 03)
 
@@ -176,10 +190,20 @@ Known device:
 - **The device communication password is stored unencrypted at rest.** It is
   kept out of logs, `repr` and the GUI, but the data directory's OS permissions
   are the only control on the stored value. See `SECURITY.md`.
-- The audit actor is the operating-system account. Roles do not exist yet
-  (PHASE 07), so diagnostic detail is still gated on the `developer_mode` flag
-  rather than on a user's role, and the audit log is visible to anyone who can
-  open the application.
+- The audit actor is the logged-in username, falling back to the
+  operating-system account when nobody is logged in (headless CLI,
+  pre-login). Diagnostic detail is gated on the admin role *and*
+  `developer_mode`; the Developer menu is admin-only.
+- **Local accounts protect the GUI, not the data directory.** Headless mode
+  (`--headless`) performs no login, and anyone with the data directory can
+  read the SQLite file. OS permissions on the data directory remain the
+  boundary, as with the device communication password.
+- No login throttling or lockout: failed attempts are audited, but rapid
+  guessing is not slowed. PBKDF2 (210k iterations) is the only cost imposed.
+- `requester_role=None` keeps the legacy un-enforced path for callers
+  without an interactive identity (tests, background sync timer). The GUI
+  always passes the logged-in role; mandatory enforcement with no bypass is
+  a follow-up once every caller carries identity.
 - `clockmanager.sync` now implements keys, reconciliation and sources; the
   headless/Linux service path uses it through `context.sync` like the GUI.
 - Attendance is stored locally and reconciled on every sync; the Attendance
@@ -199,6 +223,13 @@ Known device:
   link. PHASE 05 resolves the real employee independently: timesheets match
   stored punches to employees through the canonical user ID plus every linked
   device user ID, so the snapshot never affects calculation.
+- LAN discovery has not been run against real hardware: probing and safe
+  identification are proven against loopback sockets and the mock device
+  only. A scan finds candidates; only a connection test or sync proves one.
+- Backup restore migrates an older database forward and refuses a newer
+  schema outright; cross-version restores beyond that are untested.
+  Restoring replaces the live database file contents in place — the safety
+  backup is the way back.
 
 ## Employees / timesheets (PHASE 05)
 
@@ -228,11 +259,68 @@ Eight derived reports over immutable data: daily attendance, employee
 timesheet, weekly summary, pay-period summary, exceptions
 (missing/duplicate/excessive/overnight/unknown punch, using the same
 pairing rules as timesheets), device activity, sync history and audit
-trail. Filters: date range, employee, user ID, device, department,
-punch/status, exceptions-only. Exports to CSV, XLSX, PDF and JSON use
-dependency-free renderers and are audited as `report.export`. Schema
-still version 5: reports add no tables. Verified against SQLite and the
-mock context; no real-device run.
+  trail. Filters: date range, employee, user ID, device, department,
+  punch/status, exceptions-only. Exports to CSV, XLSX, PDF and JSON use
+  dependency-free renderers and are audited as `report.export`. Schema
+  still version 5: reports add no tables. Verified against SQLite and the
+  mock context; no real-device run.
+
+## Authentication / roles (PHASE 07)
+
+Local accounts with three roles (`domain/auth.py` is the single matrix both
+layers decide from): Admin (everything, incl. device settings, diagnostics
+and User accounts), Office staff (employees, timesheets, reports, sync,
+live capture, audit log — no device settings/diagnostics/accounts/device
+user writes), Viewer (six read-only views; sync and live capture disabled).
+
+Passwords are salted PBKDF2-HMAC-SHA256 hashes (stdlib, 210k iterations,
+16-byte salt); plaintext exists only for one hash/verify call and never
+reaches logs, `repr` or audit details. First run creates the initial admin;
+afterwards the GUI requires login and Logout returns to it (audited as
+`auth.login`/`auth.logout`, failures included). The audit actor is the
+logged-in username, falling back to the OS account headless/pre-login.
+Service mutations take an optional `requester_role` and refuse roles
+without the permission; `None` keeps the legacy path for callers without
+an interactive identity (tests, background sync).
+
+## Device management / discovery (PHASE 08)
+
+Multi-device records carry connection settings plus locally observed state:
+last seen (`devices.last_seen_at`, schema 7), firmware/platform/serial
+(stored on every successful contact) and sync state (stored counts plus the
+append-only sync history). One device ships first; nothing hardcodes it.
+
+Discovery is read-only: check one address, scan the local subnet for TCP
+4370, identify safely (connect, read snapshot, disconnect — no write
+operation exists in `protocol/discovery.py`, pinned by a test). Scans refuse
+ranges over 1024 addresses. A discovery never becomes a profile on its own:
+`register_discovered` needs an operator-supplied name, refuses duplicate
+names and already-stored addresses, and writes locally only. The Device
+settings view shows last-seen/sync state per profile and hosts the
+discovery controls; Backup stays admin-only, so office staff and viewers
+never see discovery at all.
+
+## Backup / offline resilience (PHASE 09)
+
+One zip per backup: full database copy (via the SQLite online-backup API),
+`config.json`, portable exports (employees CSV/JSON, device-users JSON,
+attendance CSV, audit CSV, sync history JSON) and a manifest with counts
+and a sensitive-content note. Portable exports carry no communication
+password, PIN, card or biometric data (exact keys pinned by tests); the zip
+itself is administrator-only because the database copy holds the stored
+device connection secrets.
+
+Restore is preview → validate → confirm: `preview_backup` reads only and
+refuses non-zips, missing files, bad manifests and newer schemas;
+`restore_backup` additionally requires `confirmed=True`, takes an automatic
+`pre-restore` safety backup, migrates older databases forward, and audits
+`backup.create` / `backup.restore`. Without confirmation nothing changes.
+
+Offline: every view reads local storage, so history, employees, timesheets,
+reports and audit keep working with the clock down; `offline_report` (shown
+in the Backup view) lists per-device stored counts, last-seen and last sync,
+and the next successful sync re-reads the whole device log — the PHASE 04
+recovery path — picking up whatever was missed.
 
 ## Protocol discoveries
 

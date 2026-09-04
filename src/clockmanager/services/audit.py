@@ -46,6 +46,14 @@ class AuditAction(StrEnum):
     EMPLOYEE_REACTIVATE = "employee.reactivate"
     EMPLOYEE_LINK = "employee.link"
     REPORT_EXPORT = "report.export"
+    AUTH_LOGIN = "auth.login"
+    AUTH_LOGOUT = "auth.logout"
+    AUTH_CREATE_USER = "auth.create_user"
+    AUTH_ROLE_CHANGE = "auth.role_change"
+    AUTH_SET_ACTIVE = "auth.set_active"
+    AUTH_PASSWORD_CHANGE = "auth.password_change"
+    BACKUP_CREATE = "backup.create"
+    BACKUP_RESTORE = "backup.restore"
 
 
 class AuditOutcome(StrEnum):
@@ -62,8 +70,9 @@ class AuditOutcome(StrEnum):
 def current_actor() -> str:
     """Identify who performed an action.
 
-    Roles arrive in PHASE 07. Until then the operating-system account is the
-    only identity the application has, and claiming more would be a fiction.
+    PHASE 07: when someone is logged in, :class:`ApplicationContext.audit`
+    reports their username; otherwise the operating-system account is still
+    the only identity the application has.
     """
     try:
         return getpass.getuser()

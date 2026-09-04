@@ -15,11 +15,45 @@ Mask sensitive values.
 
 Restrict developer/diagnostic views to administrators.
 
+Admin sees every view including User accounts. Office Staff sees the
+office workflows (Users, Attendance, Live events, Employees, Timesheets,
+Reports, Audit log) but no Device settings, Diagnostics or User accounts.
+Viewer sees six read-only views (Dashboard, Users, Attendance, Employees,
+Timesheets, Reports); sync, live capture and every other mutation is
+disabled, hidden screens refuse via a status message, and the service
+layer refuses regardless of what the widgets show.
+
 Office Staff must not see:
 - protocol tools
 - raw packet data
 - credential data
 - destructive device settings
+
+## Local accounts and roles (PHASE 07)
+
+Three local roles separate admin/office access: Admin, Office staff,
+Viewer. The matrix lives in `clockmanager.domain.auth` and is the single
+source both the service layer (which refuses) and the GUI (which
+hides/disables) decide from.
+
+Passwords are stored only as salted PBKDF2-HMAC-SHA256 hashes (stdlib,
+210k iterations, 16-byte random salt per account). Plaintext exists only
+for the duration of one hash or verify call. Hashes are excluded from
+`repr`, redacted by the logging filter like any password-named value, and
+never written to the audit log: login and account events record usernames
+and actions only, including failures.
+
+Rules enforced by `AuthService`: first run creates the initial admin;
+thereafter account administration needs an admin; a login with a wrong
+password or unknown name fails with one generic message; disabled
+accounts cannot log in; the last active admin cannot be demoted or
+disabled; changing your own password proves the current one, while an
+admin reset does not need it (and never learns it — it was never stored).
+
+Open items: no login throttling or lockout (failures are audited, guessing
+is not slowed); the headless CLI performs no login, so local accounts
+protect the GUI while OS permissions on the data directory remain the
+boundary for the database file itself.
 
 ## Device writes
 
@@ -72,8 +106,10 @@ done to it.
 Every `detail` passes through `redact_text` before storage, and no
 credential-shaped column exists on the table.
 
-Actor identity is the operating-system account. Roles arrive in PHASE 07;
-claiming more identity than the application has would be a fiction.
+Actor identity is the logged-in username, falling back to the
+operating-system account when nobody is logged in (headless CLI,
+pre-login). Login, logout, account creation, role changes,
+enable/disable and password changes are all audited; failures too.
 
 ## Device communication password
 
@@ -99,6 +135,25 @@ persisted anywhere.
 
 Do not expose credentials in ordinary exports.
 Document any backup containing sensitive device state.
+
+A PHASE 09 backup zip contains the full database copy, so it holds the
+stored device communication passwords alongside everything else
+(`SECURITY.md`: unencrypted at rest). Protect a backup file like the data
+directory itself; the manifest says so inside every zip.
+
+The portable exports in the same zip (employees CSV/JSON, device-users
+JSON, attendance CSV, audit CSV, sync history JSON) never contain a
+communication password, a PIN, a card identifier or a biometric template:
+device users export only the `has_credential_data` indicator. A test pins
+the exact exported keys.
+
+Backup creation and restore are administrator-only (`MANAGE_DEVICE_SETTINGS`),
+in the service layer as well as in the GUI: the Backup view is hidden from
+office staff and viewers. Every creation is audited as `backup.create`;
+every restore is audited as `backup.restore` in the restored database, next
+to the automatic pre-restore safety backup that preserves the replaced
+state. A restore needs a valid preview *and* an explicit confirmation —
+without confirmation nothing changes.
 
 ## Future web
 

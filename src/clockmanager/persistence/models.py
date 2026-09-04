@@ -35,6 +35,7 @@ DEFAULT_DEVICE_PORT: Final = 4370
 
 __all__ = [
     "SCHEMA_VERSION",
+    "AppUserRecord",
     "AttendanceEventRecord",
     "AuditEventRecord",
     "Base",
@@ -50,7 +51,7 @@ __all__ = [
 
 #: Bumped whenever the schema changes. Every bump needs a matching entry in
 #: :data:`clockmanager.persistence.migrations.MIGRATIONS`.
-SCHEMA_VERSION: Final = 5
+SCHEMA_VERSION: Final = 7
 
 
 def utc_now() -> datetime:
@@ -107,6 +108,9 @@ class DeviceRecord(Base):
     auto_reconnect: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     sync_interval_seconds: Mapped[int] = mapped_column(Integer, default=300, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    #: Last time this device answered a connection (PHASE 08). Stamped on a
+    #: successful connection test or sync; ``None`` means never seen.
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, server_default=func.now(), nullable=False
@@ -425,3 +429,41 @@ class PayScheduleRecord(Base):
 
     def __repr__(self) -> str:
         return f"PayScheduleRecord(id={self.id!r}, name={self.name!r})"
+
+
+class AppUserRecord(Base):
+    """A local application account (PHASE 07).
+
+    Roles separate admin/office access: ``admin``, ``office_staff`` or
+    ``viewer`` (see :mod:`clockmanager.domain.auth`).
+
+    ``password_hash`` holds a salted PBKDF2-HMAC-SHA256 hash produced by
+    :mod:`clockmanager.security.passwords`, never a password: the plaintext
+    exists only for the duration of one hash or verify call. It is the
+    second sensitive column the schema is allowed to hold (the first is the
+    device communication password); it is excluded from ``repr``, redacted
+    by the logging filter like any ``password``-named value, and never
+    written to the audit log.
+    """
+
+    __tablename__ = "app_users"
+    __table_args__ = (UniqueConstraint("username", name="uq_app_users_username"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(64), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    #: One of ``admin`` / ``office_staff`` / ``viewer``.
+    role: Mapped[str] = mapped_column(String(32), default="viewer", nullable=False)
+    #: SENSITIVE. Salted hash only; see the class docstring.
+    password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    def __repr__(self) -> str:
+        return f"AppUserRecord(username={self.username!r}, role={self.role!r})"

@@ -79,6 +79,23 @@ multiple of 40 is also a multiple of 8 and 16 — a 2-record 40-byte payload
 would otherwise parse as 10 fabricated 8-byte records. An ambiguous payload is
 refused rather than guessed at.
 
+## Discovery (PHASE 08)
+
+Finding clocks is read-only. Probing (`protocol/discovery.py`) opens a TCP
+connection to port 4370 and immediately closes it: reachability only, no
+command sent, no authentication attempted. Identification connects, reads
+the device snapshot (`connect()` returns `DeviceInfo`) and always
+disconnects, including on failure; it performs no write of any kind.
+
+A scan refuses ranges larger than 1024 addresses rather than sweeping a
+whole site, and deriving the local subnet is best-effort: when no LAN can
+be determined, discovery falls back to a manually entered address.
+
+A discovery never becomes a stored device on its own. `register_discovered`
+is the only path, and it needs an operator-supplied name, refuses duplicate
+names and already-stored addresses, and writes locally only — the device
+itself is never changed by being discovered.
+
 ## Write protocol (PHASE 03)
 
 Generic pyzk `set_user()` is NOT approved for MB1, and is never called.

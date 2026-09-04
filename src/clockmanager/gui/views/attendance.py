@@ -22,8 +22,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from clockmanager.domain.auth import Permission, Role, normalise_role
 from clockmanager.domain.models import PunchDirection
-from clockmanager.gui.views.common import build_table, fill_table, run_off_thread, section_label
+from clockmanager.gui.views.common import (
+    build_table,
+    fill_table,
+    role_allows,
+    run_off_thread,
+    section_label,
+)
 from clockmanager.services.devices import DeviceProfile, DeviceService
 from clockmanager.services.sync import StoredAttendance, SyncResult, SyncService
 
@@ -40,10 +47,15 @@ class AttendanceView(QWidget):
         service: DeviceService,
         sync: SyncService,
         parent: QWidget | None = None,
+        *,
+        role: Role | str | None = None,
     ) -> None:
         super().__init__(parent)
         self._service = service
         self._sync = sync
+        #: The logged-in role. Viewers cannot sync; ``None`` keeps the
+        #: legacy behaviour for tests.
+        self._role = normalise_role(role) if role is not None else None
         self._events: list[StoredAttendance] = []
 
         self._table = build_table(_HEADERS, self)
@@ -56,6 +68,11 @@ class AttendanceView(QWidget):
         self._sync_button.clicked.connect(self.sync_now)
         self._refresh_button = QPushButton("Refresh", self)
         self._refresh_button.clicked.connect(self.load)
+        if not role_allows(self._role, Permission.SYNC_ATTENDANCE):
+            self._sync_button.setEnabled(False)
+            self._sync_button.setToolTip(
+                "Your role is read-only. Only office staff and administrators may sync."
+            )
 
         self._status = QLabel("Press “Sync now” to store the device history locally.", self)
         self._status.setWordWrap(True)
@@ -107,7 +124,7 @@ class AttendanceView(QWidget):
         profile = self._profile()
         if profile is None:
             return None
-        return self._sync.manual_sync(profile)
+        return self._sync.manual_sync(profile, requester_role=self._role)
 
     def _on_loaded(self, payload: Any) -> None:
         self._refresh_button.setEnabled(True)
@@ -123,7 +140,7 @@ class AttendanceView(QWidget):
         self._apply_filter()
 
     def _on_synced(self, result: Any) -> None:
-        self._sync_button.setEnabled(True)
+        self._sync_button.setEnabled(role_allows(self._role, Permission.SYNC_ATTENDANCE))
         if result is None:
             self._status.setText("No device is configured. Add one in Device settings.")
             return
@@ -161,6 +178,6 @@ class AttendanceView(QWidget):
         fill_table(self._table, rows)
 
     def _on_failure(self, message: str) -> None:
-        self._sync_button.setEnabled(True)
+        self._sync_button.setEnabled(role_allows(self._role, Permission.SYNC_ATTENDANCE))
         self._refresh_button.setEnabled(True)
         self._status.setText(message)

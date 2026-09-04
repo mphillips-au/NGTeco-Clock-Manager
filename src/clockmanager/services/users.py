@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from clockmanager.diagnostics.logging_setup import get_logger
+from clockmanager.domain.auth import Permission, Role, require
 from clockmanager.domain.models import DeviceUser
 from clockmanager.domain.users import (
     CredentialAction,
@@ -182,12 +183,25 @@ class UserService:
 
     # -- writes ---------------------------------------------------------------
 
-    def save_user(self, profile: DeviceProfile, draft: UserDraft) -> UserWriteOutcome:
+    def save_user(
+        self,
+        profile: DeviceProfile,
+        draft: UserDraft,
+        *,
+        requester_role: Role | str | None = None,
+    ) -> UserWriteOutcome:
         """Create or update one user on the device, auditing the attempt.
 
         The device adapter performs the verified write sequence; this method
         adds the policy decisions around it and records the audit entry.
+
+        ``requester_role`` enforces PHASE 07 roles: only an admin may write
+        device users. ``None`` keeps the legacy path for callers without an
+        interactive identity (tests, headless); the GUI always passes the
+        logged-in role.
         """
+        if requester_role is not None:
+            require(requester_role, Permission.MANAGE_DEVICE_USERS)
         draft = draft.normalised()
         action = AuditAction.USER_UPDATE if not draft.is_new else AuditAction.USER_CREATE
 
@@ -225,13 +239,22 @@ class UserService:
         return outcome
 
     def delete_user(
-        self, profile: DeviceProfile, device_uid: int, *, confirmed: bool
+        self,
+        profile: DeviceProfile,
+        device_uid: int,
+        *,
+        confirmed: bool,
+        requester_role: Role | str | None = None,
     ) -> DeviceUser:
         """Delete one user from the device, auditing the attempt.
 
         ``confirmed`` must be ``True``. It is a required argument rather than a
         default so a caller cannot delete a user by forgetting to ask.
+        ``requester_role`` enforces PHASE 07 roles (admin only); ``None``
+        keeps the legacy path for callers without an interactive identity.
         """
+        if requester_role is not None:
+            require(requester_role, Permission.MANAGE_DEVICE_USERS)
         availability = self.write_availability()
         if not availability.users:
             self._record_delete(AuditOutcome.REFUSED, profile, device_uid, availability.reason)

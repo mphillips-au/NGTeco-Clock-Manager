@@ -19,9 +19,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from clockmanager.domain.auth import Permission, Role, can
 from clockmanager.gui.workers import CallableWorker
 
-__all__ = ["BusyGuard", "build_table", "fill_table", "run_off_thread", "section_label"]
+__all__ = [
+    "BusyGuard",
+    "build_table",
+    "fill_table",
+    "role_allows",
+    "run_off_thread",
+    "section_label",
+]
 
 
 def section_label(text: str, parent: QWidget | None = None) -> QLabel:
@@ -100,3 +108,16 @@ class BusyGuard:
     def end(self) -> None:
         for widget in self._widgets:
             widget.setEnabled(True)
+
+
+def role_allows(role: Role | str | None, permission: Permission) -> bool:
+    """Return whether a view should enable a control for ``role``.
+
+    ``None`` is the pre-login/test path without an interactive identity and
+    keeps the legacy enabled state, matching the service layer's
+    ``requester_role=None`` bypass. The GUI always passes a real role once
+    someone is logged in.
+    """
+    if role is None:
+        return True
+    return can(role, permission)

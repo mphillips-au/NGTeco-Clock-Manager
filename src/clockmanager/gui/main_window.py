@@ -25,9 +25,11 @@ from PySide6.QtWidgets import (
 
 from clockmanager import APPLICATION_NAME, __version__
 from clockmanager.diagnostics.logging_setup import get_logger
+from clockmanager.domain.auth import Role
 from clockmanager.gui.views import (
     AttendanceView,
     AuditView,
+    BackupView,
     DashboardView,
     DeviceSettingsView,
     DiagnosticsView,
@@ -35,13 +37,54 @@ from clockmanager.gui.views import (
     LiveEventsView,
     ReportsView,
     TimesheetsView,
+    UserAccountsView,
     UsersView,
 )
 from clockmanager.services.application import ApplicationContext
+from clockmanager.services.auth import AuthenticatedUser
 
-__all__ = ["MainWindow"]
+__all__ = ["MainWindow", "visible_views_for"]
 
 _logger = get_logger(__name__)
+
+#: Views every logged-in role may see. Reads need no permission; everything a
+#: role may not do is disabled inside the view or refused by the service.
+_VIEWER_VIEWS: frozenset[str] = frozenset(
+    {"Dashboard", "Users", "Attendance", "Employees", "Timesheets", "Reports"}
+)
+#: Office staff additionally run live capture and read the audit log.
+_OFFICE_VIEWS: frozenset[str] = _VIEWER_VIEWS | {"Live events", "Audit log"}
+#: The eleven pre-PHASE-07 views, in navigation order. Backup is
+#: administrator-only (it holds the full database copy); office staff and
+#: viewers never see it.
+_LEGACY_VIEWS: tuple[str, ...] = (
+    "Dashboard",
+    "Users",
+    "Attendance",
+    "Live events",
+    "Employees",
+    "Timesheets",
+    "Reports",
+    "Device settings",
+    "Audit log",
+    "Diagnostics",
+    "Backup",
+)
+
+
+def visible_views_for(role: Role | None) -> frozenset[str]:
+    """Return the navigation labels ``role`` may see.
+
+    ``None`` is the pre-login/test path and sees the ten legacy views.
+    Administrators see those plus User accounts.
+    """
+    if role is None:
+        return frozenset(_LEGACY_VIEWS)
+    if role == Role.ADMIN:
+        return frozenset(_LEGACY_VIEWS) | {"User accounts"}
+    if role == Role.OFFICE_STAFF:
+        return _OFFICE_VIEWS
+    return _VIEWER_VIEWS
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,31 +94,45 @@ class _NavigationEntry:
 
 
 class MainWindow(QMainWindow):
-    """Navigation shell hosting the PHASE 02 views."""
+    """Navigation shell hosting the application views."""
 
-    def __init__(self, context: ApplicationContext) -> None:
+    def __init__(
+        self,
+        context: ApplicationContext,
+        current_user: AuthenticatedUser | None = None,
+    ) -> None:
         super().__init__()
         self._context = context
         self._service = context.devices
         self._sync_service = context.sync
+        #: Who is logged in. ``None`` is the pre-login/test path: every
+        #: legacy view is shown and nothing is role-gated.
+        self._current_user = current_user
+        self._role = current_user.role if current_user is not None else None
+        self._logout_requested = False
 
         self.setWindowTitle(f"{APPLICATION_NAME} {__version__}")
         self.resize(1100, 720)
 
         self._users_service = context.users
+        role = self._role
 
         self.dashboard_view = DashboardView(context, self._service, self)
-        self.users_view = UsersView(self._service, self._users_service, self)
-        self.attendance_view = AttendanceView(self._service, self._sync_service, self)
-        self.live_view = LiveEventsView(self._service, self._sync_service, self)
-        self.employees_view = EmployeesView(context.employees, self)
+        self.users_view = UsersView(self._service, self._users_service, self, role=role)
+        self.attendance_view = AttendanceView(self._service, self._sync_service, self, role=role)
+        self.live_view = LiveEventsView(self._service, self._sync_service, self, role=role)
+        self.employees_view = EmployeesView(context.employees, self, role=role)
         self.timesheets_view = TimesheetsView(context.employees, context.timesheets, self)
-        self.reports_view = ReportsView(context.employees, context.reports, self)
-        self.device_settings_view = DeviceSettingsView(self._service, self)
+        self.reports_view = ReportsView(context.employees, context.reports, self, role=role)
+        self.device_settings_view = DeviceSettingsView(self._service, self, role=role)
         self.audit_view = AuditView(context.audit, self)
         self.diagnostics_view = DiagnosticsView(context, self._service, self)
+        self.backup_view = BackupView(context, self, role=role)
+        self.accounts_view: UserAccountsView | None = None
+        if current_user is not None and self._role == Role.ADMIN:
+            self.accounts_view = UserAccountsView(context.auth, current_user, self)
 
-        self._entries = [
+        all_entries = [
             _NavigationEntry("Dashboard", self.dashboard_view),
             _NavigationEntry("Users", self.users_view),
             _NavigationEntry("Attendance", self.attendance_view),
@@ -86,7 +143,17 @@ class MainWindow(QMainWindow):
             _NavigationEntry("Device settings", self.device_settings_view),
             _NavigationEntry("Audit log", self.audit_view),
             _NavigationEntry("Diagnostics", self.diagnostics_view),
+            _NavigationEntry("Backup", self.backup_view),
         ]
+        if self.accounts_view is not None:
+            all_entries.append(_NavigationEntry("User accounts", self.accounts_view))
+
+        # Hidden restricted screens (PHASE 07): a role that may not see a
+        # view gets no navigation entry and no menu item for it. The widget
+        # is still constructed so background machinery (live-capture state,
+        # background sync guards) keeps working.
+        visible = visible_views_for(self._role)
+        self._entries = [entry for entry in all_entries if entry.label in visible]
 
         self._navigation = QListWidget(self)
         self._navigation.setMaximumWidth(200)
@@ -127,6 +194,8 @@ class MainWindow(QMainWindow):
     def _maybe_background_sync(self) -> None:
         from clockmanager.gui.views.common import run_off_thread
 
+        if self._role == Role.VIEWER:
+            return  # viewers are read-only: no automatic writes, even local ones
         profile = self._service.first_enabled_profile()
         if profile is None or not profile.is_configured or profile.device_id is None:
             return
@@ -154,11 +223,12 @@ class MainWindow(QMainWindow):
         return self._entries[row].label if 0 <= row < len(self._entries) else ""
 
     def show_view(self, label: str) -> None:
-        """Switch to a view by name."""
+        """Switch to a view by name. Hidden restricted screens refuse."""
         for row, entry in enumerate(self._entries):
             if entry.label == label:
                 self._navigation.setCurrentRow(row)
                 return
+        self.statusBar().showMessage(f"{label} is not available for your role.")
 
     def _on_navigate(self, row: int) -> None:
         if not 0 <= row < len(self._entries):
@@ -186,14 +256,24 @@ class MainWindow(QMainWindow):
             self.diagnostics_view.set_live_capture_state(
                 "Running" if self.live_view.is_capturing else "Not running"
             )
+        elif entry.widget is self.backup_view:
+            self.backup_view.load()
+        elif self.accounts_view is not None and entry.widget is self.accounts_view:
+            self.accounts_view.load()
 
     # -- menus ----------------------------------------------------------------
 
     def _build_menus(self) -> None:
+        labels = {entry.label for entry in self._entries}
         file_menu = self.menuBar().addMenu("&File")
-        settings_action = file_menu.addAction("&Device settings")
-        settings_action.triggered.connect(lambda: self.show_view("Device settings"))
-        file_menu.addSeparator()
+        if "Device settings" in labels:
+            settings_action = file_menu.addAction("&Device settings")
+            settings_action.triggered.connect(lambda: self.show_view("Device settings"))
+            file_menu.addSeparator()
+        if self._current_user is not None:
+            logout_action = file_menu.addAction("&Logout")
+            logout_action.triggered.connect(self._logout)
+            file_menu.addSeparator()
         exit_action = file_menu.addAction("E&xit")
         exit_action.triggered.connect(self.close)
 
@@ -208,11 +288,22 @@ class MainWindow(QMainWindow):
         about_action = help_menu.addAction("&About")
         about_action.triggered.connect(self._show_about)
 
-        if self._context.config.developer_mode:
-            # SECURITY.md: diagnostic/developer views are administrator-only.
+        # SECURITY.md: diagnostic/developer views are administrator-only.
+        # The pre-login/test path (no identity) keeps the legacy gate.
+        if self._context.config.developer_mode and (self._role is None or self._role == Role.ADMIN):
             developer_menu = self.menuBar().addMenu("&Developer")
             schema_action = developer_menu.addAction("Database &metadata")
             schema_action.triggered.connect(self._show_schema_info)
+
+    @property
+    def logout_requested(self) -> bool:
+        """Whether the operator chose Logout rather than closing."""
+        return self._logout_requested
+
+    def _logout(self) -> None:
+        """Close so the login screen returns. Audited by the caller."""
+        self._logout_requested = True
+        self.close()
 
     def _show_about(self) -> None:
         QMessageBox.about(
@@ -245,6 +336,10 @@ class MainWindow(QMainWindow):
 
     def _show_ready_message(self) -> None:
         parts = ["Ready"]
+        if self._current_user is not None:
+            parts.append(
+                f"logged in as {self._current_user.username} ({self._current_user.role.label})"
+            )
         if self._context.config.use_mock_device:
             parts.append("using the built-in mock device, not real hardware")
         if self._context.config.enable_device_writes:
