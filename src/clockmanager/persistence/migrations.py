@@ -72,6 +72,38 @@ def _migrate_to_2(connection: Connection) -> None:
     _add_column_if_missing(connection, "devices", "enabled", "BOOLEAN NOT NULL DEFAULT 1")
 
 
+def _migrate_to_3(connection: Connection) -> None:
+    """Add the append-only ``audit_events`` table (PHASE 03).
+
+    Creating a new table cannot disturb existing rows, so this migration is
+    additive only. ``IF NOT EXISTS`` keeps it resumable after an interruption.
+    """
+    connection.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS audit_events (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                occurred_at DATETIME NOT NULL,
+                actor VARCHAR(120) NOT NULL,
+                action VARCHAR(64) NOT NULL,
+                outcome VARCHAR(32) NOT NULL,
+                device_id INTEGER,
+                device_name VARCHAR(120),
+                target VARCHAR(120),
+                target_uid INTEGER,
+                detail VARCHAR(2000) NOT NULL DEFAULT ''
+            )
+            """
+        )
+    )
+    connection.execute(
+        text("CREATE INDEX IF NOT EXISTS ix_audit_events_occurred_at ON audit_events (occurred_at)")
+    )
+    connection.execute(
+        text("CREATE INDEX IF NOT EXISTS ix_audit_events_action ON audit_events (action)")
+    )
+
+
 #: Ordered migrations. Index by target version; version 1 is the initial schema
 #: and therefore has no migration.
 MIGRATIONS: tuple[Migration, ...] = (
@@ -79,6 +111,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=2,
         description="Add device connection settings (host, port, timeout, sync, enabled)",
         apply=_migrate_to_2,
+    ),
+    Migration(
+        version=3,
+        description="Add the append-only audit_events table",
+        apply=_migrate_to_3,
     ),
 )
 

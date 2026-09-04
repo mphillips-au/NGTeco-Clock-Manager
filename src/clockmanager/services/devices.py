@@ -4,15 +4,19 @@ The GUI talks to this module, never to :mod:`clockmanager.protocol` directly
 (``ARCHITECTURE.md``). Everything here is synchronous and PySide6-free; keeping
 it off the UI thread is the GUI's job.
 
-PHASE 02 is read-only with respect to the device. Nothing here writes to,
-deletes from or reconfigures a clock. Saving a device profile writes to the
-local database only.
+This module builds devices and performs read-only device operations. Saving a
+device profile writes to the local database only.
+
+User writing lives in :mod:`clockmanager.services.users`, which asks
+:meth:`DeviceService.build` for a write-enabled adapter. A device built here
+without ``allow_writes`` cannot write at all: the capability gate refuses it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
+from typing import Protocol
 
 from clockmanager.diagnostics.logging_setup import get_logger
 from clockmanager.domain.models import AttendanceEvent, DeviceInfo, DeviceUser
@@ -33,6 +37,7 @@ __all__ = [
     "DeviceFactory",
     "DeviceProfile",
     "DeviceService",
+    "MockDeviceFactory",
     "build_device",
     "build_mock_device",
 ]
@@ -43,9 +48,23 @@ _logger = get_logger(__name__)
 #: (ARCHITECTURE.md: the GUI calls application services only).
 DEFAULT_DEVICE_PORT = _PROTOCOL_DEFAULT_PORT
 
-#: Builds a device from a profile. Injectable so the GUI and tests can run
-#: against the mock device with no hardware.
-DeviceFactory = Callable[["DeviceProfile"], AttendanceDevice]
+
+class DeviceFactory(Protocol):
+    """Builds a device from a profile.
+
+    Injectable so the GUI and tests can run against the mock device with no
+    hardware. The write unlocks are keyword-only and default to off, so a
+    caller that does not ask for writing cannot accidentally receive a device
+    that can write.
+    """
+
+    def __call__(
+        self,
+        profile: DeviceProfile,
+        *,
+        allow_writes: bool = False,
+        allow_credential_writes: bool = False,
+    ) -> AttendanceDevice: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,23 +168,84 @@ class ConnectionTestResult:
         return rows
 
 
-def build_device(profile: DeviceProfile) -> AttendanceDevice:
+def build_device(
+    profile: DeviceProfile,
+    *,
+    allow_writes: bool = False,
+    allow_credential_writes: bool = False,
+) -> AttendanceDevice:
     """Build the real NG-MB1 adapter for ``profile``."""
     return NGTecoMB1Device(
         profile.to_connection_settings(),
         auto_reconnect=profile.auto_reconnect,
+        allow_writes=allow_writes,
+        allow_credential_writes=allow_credential_writes,
     )
 
 
-def build_mock_device(profile: DeviceProfile) -> AttendanceDevice:
-    """Build a mock device, for running the GUI with no hardware present."""
-    from clockmanager.protocol.records import parse_user_payload
-    from clockmanager.services.sample_data import sample_attendance, sample_user_payload
+class MockDeviceFactory:
+    """Builds mock devices that remember what was written to them.
 
-    users = parse_user_payload(sample_user_payload())
-    return MockAttendanceDevice(
-        settings=profile.to_connection_settings() if profile.is_configured else None,
-        script=MockDeviceScript(users=users, attendance=sample_attendance(users)),
+    One instance per application context. A mock rebuilt from scratch on every
+    call would forget every write the moment the service returned, which would
+    make the write path impossible to exercise without hardware and would let a
+    broken write look like a successful one.
+
+    State is held per instance rather than in a module-level cache, so two
+    application contexts -- two tests, say -- never see each other's devices.
+    """
+
+    def __init__(self) -> None:
+        self._devices: dict[str, MockAttendanceDevice] = {}
+
+    def __call__(
+        self,
+        profile: DeviceProfile,
+        *,
+        allow_writes: bool = False,
+        allow_credential_writes: bool = False,
+    ) -> AttendanceDevice:
+        key = profile.name
+        device = self._devices.get(key)
+        if device is None:
+            device = self._build(profile)
+            self._devices[key] = device
+
+        # The unlocks belong to the caller's request, not to the stored device,
+        # so they are reapplied on every hand-out. A read must never receive a
+        # device that is still allowed to write from an earlier call.
+        device.set_write_unlocks(
+            allow_writes=allow_writes,
+            allow_credential_writes=allow_credential_writes,
+        )
+        return device
+
+    def _build(self, profile: DeviceProfile) -> MockAttendanceDevice:
+        from clockmanager.protocol.records import parse_user_payload
+        from clockmanager.services.sample_data import sample_attendance, sample_user_payload
+
+        users = parse_user_payload(sample_user_payload())
+        return MockAttendanceDevice(
+            settings=profile.to_connection_settings() if profile.is_configured else None,
+            script=MockDeviceScript(users=users, attendance=sample_attendance(users)),
+        )
+
+
+def build_mock_device(
+    profile: DeviceProfile,
+    *,
+    allow_writes: bool = False,
+    allow_credential_writes: bool = False,
+) -> AttendanceDevice:
+    """Build a one-shot mock device.
+
+    Kept for callers that want a throwaway device. Anything that writes should
+    use :class:`MockDeviceFactory`, whose devices remember their contents.
+    """
+    return MockDeviceFactory()(
+        profile,
+        allow_writes=allow_writes,
+        allow_credential_writes=allow_credential_writes,
     )
 
 
@@ -264,6 +344,28 @@ class DeviceService:
 
     # -- device operations ----------------------------------------------------
 
+    def build(
+        self,
+        profile: DeviceProfile,
+        *,
+        allow_writes: bool = False,
+        allow_credential_writes: bool = False,
+    ) -> AttendanceDevice:
+        """Build an unconnected device for ``profile``.
+
+        Write unlocks are opt-in and never inferred: a caller that wants to
+        write must say so, and the device's own capability gate still applies.
+        """
+        if not allow_writes and allow_credential_writes:
+            raise ClockManagerError(
+                "Credential writing cannot be enabled while user writing is not."
+            )
+        return self._device_factory(
+            profile,
+            allow_writes=allow_writes,
+            allow_credential_writes=allow_credential_writes,
+        )
+
     def capabilities(self, profile: DeviceProfile) -> DeviceCapabilities:
         return self._device_factory(profile).capabilities
 
@@ -317,8 +419,12 @@ class DeviceService:
         device.connect()
         return device
 
-    def _connected(self, profile: DeviceProfile) -> _ConnectedDevice:
+    def connected(self, profile: DeviceProfile) -> _ConnectedDevice:
+        """A context manager that connects on entry and always disconnects."""
         return _ConnectedDevice(self._device_factory(profile))
+
+    #: Retained for the existing read helpers in this module.
+    _connected = connected
 
 
 class _ConnectedDevice:

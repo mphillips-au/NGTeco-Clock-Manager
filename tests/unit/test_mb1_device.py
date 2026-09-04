@@ -6,8 +6,10 @@ exercised without a socket and without a real clock.
 
 from __future__ import annotations
 
+import ast
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -23,7 +25,11 @@ from clockmanager.protocol.errors import (
     DeviceProtocolError,
     DeviceTimeoutError,
 )
-from clockmanager.protocol.interface import AttendanceDevice, DeviceConnectionSettings
+from clockmanager.protocol.interface import (
+    AttendanceDevice,
+    DeviceConnectionSettings,
+    WritableUserDevice,
+)
 from clockmanager.protocol.mb1 import NGTecoMB1Device
 from clockmanager.protocol.retry import RetryPolicy
 from tests.fixtures.mb1 import (
@@ -123,12 +129,50 @@ class TestInterfaceConformance:
         device = build_device(FakeTransport())
         assert isinstance(device, AttendanceDevice)
 
-    def test_adapter_exposes_no_write_operations(self) -> None:
-        """PHASE 01 is read-only; a write path must not exist yet."""
-        forbidden = ("set_user", "delete_user", "clear_attendance", "set_time", "restart")
+    def test_adapter_satisfies_the_writable_interface(self) -> None:
+        device = build_device(FakeTransport(), allow_writes=True)
+        assert isinstance(device, WritableUserDevice)
+
+    def test_adapter_exposes_no_destructive_operations_beyond_user_delete(self) -> None:
+        """PHASE 03 adds user writes only.
+
+        Clearing attendance, resetting the device and writing biometric
+        templates stay absent: none of them has device evidence, and a method
+        that exists is a method something can call.
+        """
+        forbidden = (
+            "set_user",
+            "clear_attendance",
+            "restart",
+            "poweroff",
+            "set_time",
+            "write_fingerprint",
+            "write_face",
+            "save_user_template",
+        )
         public = {name for name in dir(NGTecoMB1Device) if not name.startswith("_")}
         assert not public & set(forbidden)
-        assert not any("write" in name or "delete" in name for name in public)
+
+    def test_generic_pyzk_user_writer_is_never_called(self) -> None:
+        """AGENTS.md: pyzk.set_user() must not be used for MB1 writes.
+
+        Checked against the parsed syntax tree rather than the text, so the
+        prose explaining why it is not used cannot fail the test, and a real
+        call cannot hide inside a string.
+        """
+        source = Path("src") / (NGTecoMB1Device.__module__.replace(".", "/") + ".py")
+        text = source.read_text(encoding="utf-8")
+        tree = ast.parse(text)
+
+        called = {
+            node.func.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        assert "set_user" not in called
+        assert "save_user_template" not in called
+        assert "clear_attendance" not in called
+        assert "CMD_USER_WRQ" in text
 
 
 class TestConnection:
@@ -315,11 +359,32 @@ class TestCapabilityEnforcement:
         ):
             device.capabilities.require(capability)
 
-    def test_write_users_is_explicitly_unsupported_not_merely_unverified(self) -> None:
-        """PROTOCOL.md: generic pyzk set_user() is not approved for MB1."""
+    def test_writing_is_locked_until_an_operator_unlocks_it(self) -> None:
+        """No MB1 has accepted a record from this path, so it starts locked."""
         state = build_device(FakeTransport()).capabilities.state(Capability.WRITE_USERS)
-        assert state.support is Support.UNSUPPORTED
+        assert state.support is Support.UNVERIFIED
+        assert not state.usable
         assert "120-byte" in state.reason
+
+    def test_unlocking_reports_operator_enabled_never_verified(self) -> None:
+        """An unlocked capability must not masquerade as proven on hardware."""
+        state = build_device(FakeTransport(), allow_writes=True).capabilities.state(
+            Capability.WRITE_USERS
+        )
+        assert state.support is Support.OPERATOR_ENABLED
+        assert state.usable
+        assert not state.proven
+
+    def test_card_writing_stays_unsupported_and_cannot_be_unlocked(self) -> None:
+        """PROTOCOL.md: no card field has been identified in the MB1 record."""
+        capabilities = build_device(FakeTransport(), allow_writes=True).capabilities
+        assert not capabilities.supports(Capability.WRITE_USER_CARD)
+        with pytest.raises(DeviceCapabilityError):
+            capabilities.unlocked([Capability.WRITE_USER_CARD], reason="test")
+
+    def test_clearing_attendance_stays_unsupported(self) -> None:
+        capabilities = build_device(FakeTransport(), allow_writes=True).capabilities
+        assert not capabilities.supports(Capability.CLEAR_ATTENDANCE)
 
 
 class TestConnectionSettings:

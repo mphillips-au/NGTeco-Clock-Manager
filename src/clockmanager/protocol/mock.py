@@ -8,6 +8,11 @@ This lives in the shipped package rather than in ``tests/`` so PHASE 02 can run
 the GUI against it without a device on the bench.
 
 It holds no real credentials: fixtures are synthetic.
+
+PHASE 03 gives it the same write path as the real adapter, including the
+capability gate, so the write sequence and its failure modes can be tested
+without hardware. Writes are refused unless the mock is built with
+``allow_writes=True``, exactly as the real device requires an operator unlock.
 """
 
 from __future__ import annotations
@@ -19,15 +24,81 @@ from types import TracebackType
 from typing import Self
 
 from clockmanager.domain.models import AttendanceEvent, DeviceIdentity, DeviceInfo, DeviceUser
+from clockmanager.domain.users import (
+    CredentialAction,
+    UserDraft,
+    UserWriteOutcome,
+    describe_changes,
+)
+from clockmanager.protocol.builders import RawUserRecord, build_user_record
 from clockmanager.protocol.capabilities import (
     NG_MB1_CAPABILITIES,
     Capability,
     DeviceCapabilities,
 )
-from clockmanager.protocol.errors import DeviceConnectionError, DeviceNotConnectedError
+from clockmanager.protocol.constants import MAX_USER_UID, USER_CREDENTIAL_SLICE
+from clockmanager.protocol.errors import (
+    DeviceConnectionError,
+    DeviceNotConnectedError,
+    DeviceValidationError,
+    DeviceVerificationError,
+    DeviceWriteError,
+)
 from clockmanager.protocol.interface import DeviceConnectionSettings
+from clockmanager.protocol.records import parse_user_record
 
 __all__ = ["MockAttendanceDevice", "MockDeviceScript", "sample_settings"]
+
+
+#: Filler for a seeded credential region. Deliberately not a plausible PIN:
+#: the mock only ever needs the region to be non-empty so that credential
+#: preservation can be observed.
+_CREDENTIAL_FILLER_BYTE = 0xAB
+
+
+def _seed_record(user: DeviceUser) -> bytes:
+    """Build the mock's starting 120-byte record for one seeded user.
+
+    A user whose ``has_credential_data`` is set gets a non-empty credential
+    region, so a test can prove that an update preserved it.
+    """
+    record = build_user_record(
+        uid=user.device_uid,
+        user_id=user.user_id,
+        first_name=user.first_name,
+        last_name=user.last_name,
+        privilege=user.privilege,
+        credential_action=CredentialAction.CLEAR,
+    )
+    if not user.has_credential_data:
+        return record
+    filler = bytes([_CREDENTIAL_FILLER_BYTE]) * (
+        USER_CREDENTIAL_SLICE.stop - USER_CREDENTIAL_SLICE.start
+    )
+    return record[: USER_CREDENTIAL_SLICE.start] + filler + record[USER_CREDENTIAL_SLICE.stop :]
+
+
+def _without_credential(record: bytes) -> bytes:
+    """A record with the opaque credential region removed, for comparison."""
+    return record[: USER_CREDENTIAL_SLICE.start] + record[USER_CREDENTIAL_SLICE.stop :]
+
+
+def _mock_capabilities(*, allow_writes: bool, allow_credential_writes: bool) -> DeviceCapabilities:
+    """Mirror the real adapter's capability unlock, gates included."""
+    unlocked: list[Capability] = []
+    if allow_writes:
+        unlocked.extend((Capability.WRITE_USERS, Capability.DELETE_USERS))
+    if allow_credential_writes:
+        if not allow_writes:
+            raise DeviceValidationError(
+                "Credential writing cannot be unlocked while user writing is locked."
+            )
+        unlocked.append(Capability.WRITE_USER_PASSWORD)
+    if not unlocked:
+        return NG_MB1_CAPABILITIES
+    return NG_MB1_CAPABILITIES.unlocked(
+        unlocked, reason="Mock device with writes enabled for testing."
+    )
 
 
 def sample_settings(name: str = "Mock clock") -> DeviceConnectionSettings:
@@ -62,6 +133,12 @@ class MockDeviceScript:
     connect_failures: int = 0
     #: Number of times each read should fail before succeeding.
     read_failures: int = 0
+    #: Number of times a write should be rejected by the device before
+    #: succeeding. Exercises the "device refused the write" path.
+    write_failures: int = 0
+    #: When set, the mock stores this record instead of the one it was sent,
+    #: so read-back comparison failure can be tested.
+    corrupt_next_write: bool = False
 
 
 class MockAttendanceDevice:
@@ -71,6 +148,9 @@ class MockAttendanceDevice:
         self,
         settings: DeviceConnectionSettings | None = None,
         script: MockDeviceScript | None = None,
+        *,
+        allow_writes: bool = False,
+        allow_credential_writes: bool = False,
     ) -> None:
         self._settings = settings if settings is not None else sample_settings()
         self._script = script if script is not None else MockDeviceScript()
@@ -78,8 +158,20 @@ class MockAttendanceDevice:
         self._stop_live = False
         self._remaining_connect_failures = self._script.connect_failures
         self._remaining_read_failures = self._script.read_failures
+        self._remaining_write_failures = self._script.write_failures
         self.connect_calls = 0
         self.disconnect_calls = 0
+        self.write_calls = 0
+        self.delete_calls = 0
+        #: Raw 120-byte records, so the mock exercises the same
+        #: read-modify-write and credential-preservation logic as the adapter.
+        self._records: dict[int, bytes] = {
+            user.device_uid: _seed_record(user) for user in self._script.users
+        }
+        self._capabilities = _mock_capabilities(
+            allow_writes=allow_writes,
+            allow_credential_writes=allow_credential_writes,
+        )
 
     # -- identity -------------------------------------------------------------
 
@@ -89,7 +181,7 @@ class MockAttendanceDevice:
 
     @property
     def capabilities(self) -> DeviceCapabilities:
-        return NG_MB1_CAPABILITIES
+        return self._capabilities
 
     @property
     def is_connected(self) -> bool:
@@ -98,6 +190,17 @@ class MockAttendanceDevice:
     @property
     def script(self) -> MockDeviceScript:
         return self._script
+
+    def set_write_unlocks(self, *, allow_writes: bool, allow_credential_writes: bool) -> None:
+        """Re-apply the operator write unlocks to a device being handed out.
+
+        A long-lived mock is reused across calls, so its unlocks must reflect
+        what the current caller asked for, not what an earlier one did.
+        """
+        self._capabilities = _mock_capabilities(
+            allow_writes=allow_writes,
+            allow_credential_writes=allow_credential_writes,
+        )
 
     # -- connection -----------------------------------------------------------
 
@@ -155,12 +258,118 @@ class MockAttendanceDevice:
     def get_users(self) -> list[DeviceUser]:
         self.capabilities.require(Capability.READ_USERS)
         self._guard()
-        return list(self._script.users)
+        return [parse_user_record(raw) for _uid, raw in sorted(self._records.items())]
+
+    def read_raw_user_records(self) -> list[RawUserRecord]:
+        self.capabilities.require(Capability.READ_USERS)
+        self._guard()
+        return [
+            RawUserRecord(uid=uid, user_id=parse_user_record(raw).user_id, raw=raw)
+            for uid, raw in sorted(self._records.items())
+        ]
 
     def get_attendance(self) -> list[AttendanceEvent]:
         self.capabilities.require(Capability.READ_ATTENDANCE)
         self._guard()
         return list(self._script.attendance)
+
+    # -- writes ---------------------------------------------------------------
+
+    def next_available_uid(self) -> int:
+        for candidate in range(1, MAX_USER_UID + 1):
+            if candidate not in self._records:
+                return candidate
+        raise DeviceWriteError("The mock device is full.")
+
+    def apply_user_write(self, draft: UserDraft) -> UserWriteOutcome:
+        """Create or update a user, following the same sequence as the adapter."""
+        self.capabilities.require(Capability.WRITE_USERS)
+        if draft.changes_credential:
+            self.capabilities.require(Capability.WRITE_USER_PASSWORD)
+        self._guard()
+        self.write_calls += 1
+
+        draft = draft.normalised()
+        problems = draft.validate()
+        if problems:
+            raise DeviceValidationError(" ".join(problems))
+
+        current_raw = None if draft.device_uid is None else self._records.get(draft.device_uid)
+        if draft.device_uid is not None and current_raw is None:
+            raise DeviceValidationError(
+                f"No user with device UID {draft.device_uid} exists on the device."
+            )
+
+        current = (
+            None
+            if current_raw is None
+            else RawUserRecord(uid=draft.device_uid or 0, user_id=draft.user_id, raw=current_raw)
+        )
+        before = None if current_raw is None else parse_user_record(current_raw)
+
+        for uid, raw in self._records.items():
+            if parse_user_record(raw).user_id == draft.user_id and uid != draft.device_uid:
+                raise DeviceValidationError(
+                    f"User ID {draft.user_id!r} is already used by device UID {uid}."
+                )
+
+        uid = draft.device_uid if draft.device_uid is not None else self.next_available_uid()
+        record = build_user_record(
+            uid=uid,
+            user_id=draft.user_id,
+            first_name=draft.first_name,
+            last_name=draft.last_name,
+            privilege=draft.privilege,
+            credential_action=draft.credential_action,
+            existing=current,
+            password=draft.password,
+        )
+
+        if self._remaining_write_failures > 0:
+            self._remaining_write_failures -= 1
+            raise DeviceWriteError("Mock device rejected the write.")
+
+        stored = record
+        if self._script.corrupt_next_write:
+            self._script.corrupt_next_write = False
+            # Store something the device was not asked to store, so the
+            # read-back comparison has to catch it.
+            stored = record[:35] + b"X" + record[36:]
+        self._records[uid] = stored
+
+        read_back = self._records[uid]
+        if _without_credential(read_back) != _without_credential(record):
+            raise DeviceVerificationError(
+                f"The record stored for UID {uid} does not match what was sent."
+            )
+
+        return UserWriteOutcome(
+            user=parse_user_record(read_back),
+            created=current_raw is None,
+            changes=tuple(describe_changes(before, draft)),
+        )
+
+    def delete_user(self, device_uid: int) -> DeviceUser:
+        """Delete a user, verifying the removal, as the adapter does."""
+        self.capabilities.require(Capability.DELETE_USERS)
+        self._guard()
+        self.delete_calls += 1
+
+        raw = self._records.get(device_uid)
+        if raw is None:
+            raise DeviceValidationError(
+                f"No user with device UID {device_uid} exists on the device."
+            )
+        doomed = parse_user_record(raw)
+
+        if self._remaining_write_failures > 0:
+            self._remaining_write_failures -= 1
+            raise DeviceWriteError("Mock device rejected the delete.")
+
+        del self._records[device_uid]
+        if device_uid in self._records:  # pragma: no cover - defensive
+            raise DeviceVerificationError(f"UID {device_uid} is still present after deletion.")
+        return doomed
 
     # -- live capture ---------------------------------------------------------
 

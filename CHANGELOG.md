@@ -2,6 +2,116 @@
 
 ## Unreleased
 
+### PHASE 03 — MB1 User Management (2026-09-04)
+
+Added user create/update/delete on the NG-MB1, built on the verified 120-byte
+record. The path is implemented and tested but **unverified on hardware**, so it
+ships switched off.
+
+#### The 120-byte write path
+- New `clockmanager.protocol.builders`: builds one exact 120-byte MB1 user
+  record, validates every field before packing, and length-checks the result.
+  `pyzk.set_user()` builds a 72-byte packet and is never called — a test asserts
+  that against the module's parsed syntax tree rather than its text.
+- `RawUserRecord` keeps a whole 120-byte record inside the protocol layer so the
+  adapter can read-modify-write. Its `raw` is excluded from `repr`, and the type
+  never reaches a service or the GUI.
+- The credential region (bytes 3:35) is treated as opaque: an update copies it
+  byte-for-byte, so renaming a user cannot destroy their PIN. Setting one writes
+  only bytes 3:11, a candidate offset inferred from the generic ZKTeco record,
+  and preserves the rest.
+- `NGTecoMB1Device.apply_user_write()` and `.delete_user()` perform the whole
+  sequence internally — read, validate, build, send, require an
+  acknowledgement, read back, compare — so a caller cannot do it partially.
+  Comparison is byte-exact outside the credential region and on presence within
+  it. Writes are never retried.
+- `CMD_REFRESHDATA` is sent after every write; a refusal there is reported as
+  leaving the device in an unknown state, not as a success.
+
+#### Honest capabilities
+- New `Support.OPERATOR_ENABLED` and `DeviceCapabilities.unlocked()`. Writing is
+  `UNVERIFIED` and unusable until an operator unlocks it, at which point it
+  reports "operator-enabled (unverified)" — never `SUPPORTED`. An `UNSUPPORTED`
+  capability cannot be unlocked at all.
+- `WRITE_USERS` moved from `UNSUPPORTED` to `UNVERIFIED`: a real 120-byte path
+  now exists. `WRITE_USER_PASSWORD` added as `UNVERIFIED` with its own unlock.
+  `WRITE_USER_CARD` added as `UNSUPPORTED`; no card field has been identified.
+- Two configuration switches, both off by default:
+  `CLOCKMANAGER_ENABLE_DEVICE_WRITES` and
+  `CLOCKMANAGER_ENABLE_CREDENTIAL_WRITES`. The second is ineffective without the
+  first.
+
+#### Domain and services
+- New `clockmanager.domain.users`: `UserDraft` (validated intent, with
+  `password` excluded from `repr`), `CredentialAction`, `UserChange`,
+  `UserWriteOutcome`, `describe_changes`. Field limits are checked in **bytes**,
+  so a form that accepts an accented name cannot produce a record the device
+  rejects.
+- New `UserService`: refuses a write the operator has not enabled and says why,
+  validates before opening a connection, describes a delete's impact from a live
+  read, and audits every attempt. `delete_user` takes `confirmed` as a required
+  argument so a user cannot be deleted by forgetting to ask.
+- `DeviceService.build()` hands out devices with write unlocks opt-in and
+  keyword-only; a read can never receive a device that is allowed to write.
+
+#### Audit log
+- Schema version 3 adds the append-only `audit_events` table.
+  `AuditRepository` offers `add`, `recent` and `count` and no way to edit or
+  delete a row.
+- Entries record refusals and failures as well as successes. `device_id` is a
+  plain value rather than a foreign key, so removing a device cannot erase the
+  record of what was done to it.
+- Every `detail` is redacted before storage and truncated to the column width. A
+  PIN change is recorded as an action, never as a value.
+
+#### GUI
+- Users view: search, admins-only filter, add/edit/delete, and a per-change
+  confirmation that lists exactly what will be written. Buttons are disabled
+  with an explanation when writing is off. Selection maps through the UID column
+  rather than the row index, so sorting the table cannot target the wrong user.
+- New user form dialog: offers only the two device-verified privileges,
+  validates through the domain rules before it will close, masks the PIN field,
+  never populates it from the device, and disables it unless PIN writing is
+  unlocked.
+- Deleting shows the user read live from the device plus its attendance count,
+  and warns that attendance history is not removed.
+- New Audit log view: read-only, filterable, with no clear action.
+- The About box and status bar now state plainly whether this installation can
+  change a device.
+
+#### Mock device
+- The mock gained the same write path and the same capability gates, so a test
+  written against it cannot pass for code a real device would refuse.
+- New `MockDeviceFactory` keeps one device per profile for the life of an
+  application context, so writes persist across service calls and the write path
+  can be exercised end to end with no hardware. State is per-instance, so two
+  contexts never share devices.
+
+#### Fixes
+- `AuditView` no longer reads in its constructor, matching every other view. The
+  previous behaviour let a pooled worker outlive the widget and crash Qt.
+- A log call used `created` in `extra`, which collides with a reserved
+  `LogRecord` attribute and raised whenever logging was configured.
+
+#### Tests
+- 498 tests, 91% statement coverage. New suites cover the record builder, the
+  adapter write sequence against a recording fake transport, the mock's writes,
+  the user service's policy and auditing, the audit log, schema version 3, and
+  the GUI form, buttons and confirmations.
+- New opt-in real-device write suite requiring a **second** switch
+  (`CLOCKMANAGER_TEST_ALLOW_WRITES=1`) and a third for credentials. It touches
+  only `ZZTEST-`-prefixed disposable accounts, cleans up after itself, and
+  carries a syntax-tree guard against a future edit making it destructive.
+- Existing PHASE 01/02 tests asserting "no write path exists" were updated to
+  assert the PHASE 03 reality instead: writes exist but are gated, and
+  attendance clearing, factory reset and biometric writing still do not exist.
+
+#### Known limitations recorded
+- No MB1 has accepted a record from this write path. Until the opt-in suite is
+  run against hardware, treat it as unproven.
+- The PIN offset inside the credential region is inferred, not verified.
+- Whether the MB1 accepts an application-chosen UID for a new user is unverified.
+
 ### PHASE 02 — Windows GUI / Settings / Diagnostics (2026-09-04)
 
 Turned the shell into a usable read-only application. No device writes.

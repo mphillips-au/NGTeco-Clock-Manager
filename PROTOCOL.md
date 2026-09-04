@@ -79,18 +79,75 @@ multiple of 40 is also a multiple of 8 and 16 — a 2-record 40-byte payload
 would otherwise parse as 10 fabricated 8-byte records. An ambiguous payload is
 refused rather than guessed at.
 
-## Write protocol
+## Write protocol (PHASE 03)
 
-Generic pyzk `set_user()` is NOT approved for MB1.
-The generic implementation uses the wrong user packet shape.
+Generic pyzk `set_user()` is NOT approved for MB1, and is never called.
 
-The MB1 write path must use an explicitly verified 120-byte record.
+The evidence, read from the pyzk 0.9 source: for any device whose
+`user_packet_size` is not 28, `set_user()` builds
+`pack("HB8s24s4sx7sx24s", ...)` — a **72-byte** packet
+(2 + 1 + 8 + 24 + 4 + 1 + 7 + 1 + 24). The MB1 record is **120 bytes** with a
+different field layout. The two are not compatible.
 
-Deletion appears to use the generic delete-user command with UID payload, but real-device destructive testing must remain controlled.
+The application therefore builds the record itself
+(`clockmanager.protocol.builders.build_user_record`) and sends it with
+`CMD_USER_WRQ` (8), followed by `CMD_REFRESHDATA` (1013) so the device reloads
+its interior data before the read-back.
+
+Deletion uses `CMD_DELETE_USER` (18) with a two-byte little-endian UID payload.
+That command is model independent, but destructive testing remains controlled.
+
+### Write sequence
+
+Every write performs, inside the adapter so a caller cannot skip a step:
+
+1. read the device's user records whole
+2. validate the request against what is actually on the device
+3. build the exact 120-byte record
+4. send it
+5. require an acknowledgement (`status` true from the command response)
+6. read the records back
+7. compare
+
+Comparison is byte-exact outside the credential region. The credential region
+is compared on presence only: a device may store a PIN in a transformed form,
+so comparing those bytes would fail spuriously and would require handling the
+secret.
+
+Writes are never retried. A retry could apply the same change twice, and a
+write whose outcome is unknown must be investigated rather than repeated.
+
+### Status: UNVERIFIED
+
+No NG-MB1 has yet accepted a record from this path. `Capability.WRITE_USERS`
+and `Capability.DELETE_USERS` are `UNVERIFIED` and unusable until an operator
+unlocks them, at which point they report `OPERATOR_ENABLED`, never `SUPPORTED`.
+`tests/integration/test_real_device_writes.py` is the suite that would change
+that.
 
 ## Credentials
 
-The user record contains a credential/PIN region. Do not expose its contents in normal tooling.
+The user record contains a credential/PIN region at bytes 3:35 (32 bytes). Do
+not expose its contents in normal tooling.
+
+**Its internal layout is unknown.** The application treats it as opaque:
+
+- an update copies the existing 32 bytes byte-for-byte, so changing a name
+  cannot destroy a user's PIN
+- clearing zeroes the whole region
+- setting a PIN writes into bytes 3:11 only, a candidate offset inferred from
+  the generic ZKTeco record whose 8-byte password field follows the privilege
+  byte. Everything outside that field is preserved, so a wrong guess damages as
+  little as possible.
+
+Setting or clearing a credential is gated behind
+`Capability.WRITE_USER_PASSWORD`, which is UNVERIFIED and requires its own
+operator unlock.
+
+## Cards
+
+No card field has been identified in the 120-byte record.
+`Capability.WRITE_USER_CARD` is UNSUPPORTED and cannot be unlocked.
 
 ## Biometrics
 

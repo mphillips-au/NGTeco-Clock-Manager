@@ -3,22 +3,33 @@
 from __future__ import annotations
 
 from clockmanager.services.application import ApplicationContext, ApplicationStatus, bootstrap
+from clockmanager.services.audit import AuditAction, AuditEntry, AuditOutcome, AuditService
 from clockmanager.services.devices import (
     DEFAULT_DEVICE_PORT,
     ConnectionTestResult,
     DeviceProfile,
     DeviceService,
+    MockDeviceFactory,
     build_device,
     build_mock_device,
 )
+from clockmanager.services.users import DeleteImpact, UserService, WriteAvailability
 
 __all__ = [
     "DEFAULT_DEVICE_PORT",
     "ApplicationContext",
     "ApplicationStatus",
+    "AuditAction",
+    "AuditEntry",
+    "AuditOutcome",
+    "AuditService",
     "ConnectionTestResult",
+    "DeleteImpact",
     "DeviceProfile",
     "DeviceService",
+    "MockDeviceFactory",
+    "UserService",
+    "WriteAvailability",
     "bootstrap",
     "build_device",
     "build_mock_device",

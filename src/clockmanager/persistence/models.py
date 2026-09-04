@@ -6,7 +6,8 @@ even while only one NG-MB1 is supported.
 
 No credential, card identifier or biometric template is stored. If a later
 phase proves such storage is required, it must be specified in ``SECURITY.md``
-first.
+first. That applies to the audit log too: it records that a credential changed,
+never what it changed to.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ DEFAULT_DEVICE_PORT: Final = 4370
 __all__ = [
     "SCHEMA_VERSION",
     "AttendanceEventRecord",
+    "AuditEventRecord",
     "Base",
     "DeviceRecord",
     "DeviceUserRecord",
@@ -43,7 +45,7 @@ __all__ = [
 
 #: Bumped whenever the schema changes. Every bump needs a matching entry in
 #: :data:`clockmanager.persistence.migrations.MIGRATIONS`.
-SCHEMA_VERSION: Final = 2
+SCHEMA_VERSION: Final = 3
 
 
 def utc_now() -> datetime:
@@ -198,4 +200,51 @@ class AttendanceEventRecord(Base):
         return (
             f"AttendanceEventRecord(device_id={self.device_id!r}, "
             f"user_id={self.user_id!r}, occurred_at={self.occurred_at!r})"
+        )
+
+
+class AuditEventRecord(Base):
+    """An append-only record of an action taken against a device or its data.
+
+    ``SECURITY.md`` requires every device write to record an audit event. Rows
+    are written once and never updated or deleted by the application.
+
+    ``detail`` is a human-readable description of what changed. It is produced
+    by :func:`clockmanager.domain.users.describe_changes`, which reports a PIN
+    as an action ("Set a new PIN") and never as a value, so no credential can
+    reach this table.
+    """
+
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        Index("ix_audit_events_occurred_at", "occurred_at"),
+        Index("ix_audit_events_action", "action"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    #: Who performed the action. Roles arrive in PHASE 07; until then this is
+    #: the operating-system account that ran the application.
+    actor: Mapped[str] = mapped_column(String(120), nullable=False)
+    #: What was attempted, e.g. ``user.create``, ``user.update``, ``user.delete``.
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: ``succeeded``, ``failed`` or ``refused``. A refused or failed attempt is
+    #: recorded too: an audit log that only shows successes is not an audit log.
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: The device the action targeted, kept as a plain value rather than a
+    #: foreign key so removing a device cannot erase its audit history.
+    device_id: Mapped[int | None] = mapped_column(Integer, default=None)
+    device_name: Mapped[str | None] = mapped_column(String(120), default=None)
+    #: The subject of the action, e.g. a device user ID.
+    target: Mapped[str | None] = mapped_column(String(120), default=None)
+    target_uid: Mapped[int | None] = mapped_column(Integer, default=None)
+    #: What changed, or why the action failed. Never contains a credential.
+    detail: Mapped[str] = mapped_column(String(2000), default="", nullable=False)
+
+    def __repr__(self) -> str:
+        return (
+            f"AuditEventRecord(action={self.action!r}, outcome={self.outcome!r}, "
+            f"target={self.target!r})"
         )

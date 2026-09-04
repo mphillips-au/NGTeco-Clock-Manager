@@ -27,7 +27,14 @@ from clockmanager.persistence.database import (
     schema_metadata,
 )
 from clockmanager.persistence.repositories import DeviceRepository
-from clockmanager.services.devices import DeviceService, build_device, build_mock_device
+from clockmanager.services.audit import AuditService
+from clockmanager.services.devices import (
+    DeviceFactory,
+    DeviceService,
+    MockDeviceFactory,
+    build_device,
+)
+from clockmanager.services.users import UserService
 
 __all__ = ["ApplicationContext", "ApplicationStatus", "bootstrap"]
 
@@ -54,6 +61,9 @@ class ApplicationStatus:
     known_devices: int
     developer_mode: bool
     using_mock_device: bool = False
+    device_writes_enabled: bool = False
+    credential_writes_enabled: bool = False
+    audit_entries: int = 0
 
     def as_rows(self) -> list[tuple[str, str]]:
         """Label/value pairs for diagnostics display."""
@@ -69,6 +79,15 @@ class ApplicationStatus:
             ("Known devices", str(self.known_devices)),
             ("Developer mode", "On" if self.developer_mode else "Off"),
             ("Device source", "Mock device" if self.using_mock_device else "Real hardware"),
+            (
+                "Device writing",
+                "Enabled (unverified path)" if self.device_writes_enabled else "Disabled",
+            ),
+            (
+                "Credential writing",
+                "Enabled (unverified layout)" if self.credential_writes_enabled else "Disabled",
+            ),
+            ("Audit entries", str(self.audit_entries)),
         ]
 
 
@@ -80,17 +99,35 @@ class ApplicationContext:
     database: Database
     log_file: Path
     schema_version: int
+    #: Built once per context. The mock factory is stateful, so rebuilding it
+    #: per call would discard every write made through it.
+    device_factory: DeviceFactory = build_device
 
     @property
     def devices(self) -> DeviceService:
         """Device application service, wired to the configured device factory."""
-        factory = build_mock_device if self.config.use_mock_device else build_device
-        return DeviceService(self.database, device_factory=factory)
+        return DeviceService(self.database, device_factory=self.device_factory)
+
+    @property
+    def audit(self) -> AuditService:
+        """Append-only audit log service."""
+        return AuditService(self.database)
+
+    @property
+    def users(self) -> UserService:
+        """User management service, with device writing gated by configuration."""
+        return UserService(
+            self.devices,
+            self.audit,
+            writes_enabled=self.config.enable_device_writes,
+            credential_writes_enabled=self.config.enable_credential_writes,
+        )
 
     def status(self) -> ApplicationStatus:
         """Collect a display-ready status snapshot."""
         with self.database.session() as session:
             known_devices = DeviceRepository(session).count()
+        audit_entries = self.audit.count()
 
         return ApplicationStatus(
             application_name=APPLICATION_NAME,
@@ -105,6 +142,9 @@ class ApplicationContext:
             known_devices=known_devices,
             developer_mode=self.config.developer_mode,
             using_mock_device=self.config.use_mock_device,
+            device_writes_enabled=self.config.enable_device_writes,
+            credential_writes_enabled=self.config.enable_credential_writes,
+            audit_entries=audit_entries,
         )
 
     def schema_info(self) -> dict[str, str]:
@@ -158,4 +198,5 @@ def bootstrap(
         database=database,
         log_file=log_file,
         schema_version=schema_version,
+        device_factory=MockDeviceFactory() if resolved_config.use_mock_device else build_device,
     )

@@ -46,6 +46,12 @@ Use:
 
 Never require the production clock for normal CI.
 
+Write tests need a **second** switch beyond the device address
+(`CLOCKMANAGER_TEST_ALLOW_WRITES=1`), and credential writes a third
+(`CLOCKMANAGER_TEST_ALLOW_CREDENTIAL_WRITES=1`). Every account they touch
+carries the `ZZTEST-` prefix and is removed afterwards; nothing without that
+prefix is ever modified or deleted.
+
 ## GUI
 
 Use smoke tests and service-layer tests.

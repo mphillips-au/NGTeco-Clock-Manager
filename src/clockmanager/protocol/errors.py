@@ -17,6 +17,9 @@ __all__ = [
     "DeviceParseError",
     "DeviceProtocolError",
     "DeviceTimeoutError",
+    "DeviceValidationError",
+    "DeviceVerificationError",
+    "DeviceWriteError",
 ]
 
 
@@ -45,6 +48,24 @@ class DeviceParseError(DeviceProtocolError):
 
 class DeviceNotConnectedError(DeviceError):
     """An operation requiring a live connection was attempted while closed."""
+
+
+class DeviceValidationError(DeviceError):
+    """Data destined for a device failed validation.
+
+    Raised before anything is sent, so a rejected value never reaches the wire.
+    """
+
+
+class DeviceWriteError(DeviceError):
+    """A device write was attempted but the device did not acknowledge it."""
+
+
+class DeviceVerificationError(DeviceWriteError):
+    """A write was acknowledged, but reading it back did not match what was sent.
+
+    The device state after this is unknown and must not be assumed unchanged.
+    """
 
 
 class DeviceCapabilityError(DeviceError):

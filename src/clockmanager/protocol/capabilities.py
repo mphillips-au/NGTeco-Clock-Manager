@@ -8,7 +8,7 @@ is unverified travels with it into diagnostics and the GUI.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -34,6 +34,8 @@ class Capability(StrEnum):
     LIVE_CAPTURE = "live_capture"
     SET_TIME = "set_time"
     WRITE_USERS = "write_users"
+    WRITE_USER_PASSWORD = "write_user_password"
+    WRITE_USER_CARD = "write_user_card"
     DELETE_USERS = "delete_users"
     CLEAR_ATTENDANCE = "clear_attendance"
     READ_FINGERPRINT = "read_fingerprint"
@@ -49,6 +51,10 @@ class Support(StrEnum):
     UNSUPPORTED = "unsupported"
     #: Not proven on real hardware. Treated as unusable until it is.
     UNVERIFIED = "unverified"
+    #: Still unproven, but deliberately unlocked by an operator so it can be
+    #: verified on real hardware with disposable accounts. Usable, and labelled
+    #: everywhere it appears so nobody mistakes it for a verified capability.
+    OPERATOR_ENABLED = "operator-enabled (unverified)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +66,11 @@ class CapabilityState:
 
     @property
     def usable(self) -> bool:
+        return self.support in (Support.SUPPORTED, Support.OPERATOR_ENABLED)
+
+    @property
+    def proven(self) -> bool:
+        """Whether real hardware has actually demonstrated this."""
         return self.support is Support.SUPPORTED
 
 
@@ -85,6 +96,33 @@ class DeviceCapabilities:
             raise DeviceCapabilityError(
                 f"Capability {capability.value!r} is {state.support.value}: {state.reason}"
             )
+
+    def unlocked(self, capabilities: Iterable[Capability], *, reason: str) -> DeviceCapabilities:
+        """Return a copy with ``capabilities`` deliberately enabled by an operator.
+
+        This is how an unproven write path is exercised on real hardware
+        without lying about it: the capability becomes usable but is reported
+        as :data:`Support.OPERATOR_ENABLED`, never as verified.
+
+        An :data:`Support.UNSUPPORTED` capability cannot be unlocked. Those are
+        withheld because they are known to be wrong or destructive, and no
+        operator flag changes that.
+        """
+        states = dict(self.states)
+        for capability in capabilities:
+            current = self.state(capability)
+            if current.support is Support.UNSUPPORTED:
+                raise DeviceCapabilityError(
+                    f"Capability {capability.value!r} is unsupported and cannot be "
+                    f"unlocked: {current.reason}"
+                )
+            if current.support is Support.SUPPORTED:
+                continue
+            states[capability] = CapabilityState(
+                Support.OPERATOR_ENABLED,
+                f"{reason} Underlying state: {current.reason}",
+            )
+        return DeviceCapabilities(states=states)
 
     def as_rows(self) -> list[tuple[str, str, str]]:
         """Capability/support/reason triples for diagnostics display."""
@@ -122,13 +160,26 @@ NG_MB1_CAPABILITIES = DeviceCapabilities(
         Capability.SET_TIME: _unverified(
             "Writing the device clock has not been exercised on real hardware."
         ),
-        Capability.WRITE_USERS: _unsupported(
-            "Generic pyzk set_user() uses the wrong user packet shape for MB1 and is "
-            "not approved. A verified 120-byte write path is required first (PHASE 03)."
+        Capability.WRITE_USERS: _unverified(
+            "An application-owned 120-byte write path exists and is covered by unit "
+            "tests (PHASE 03), but no MB1 has yet accepted a record from it. Generic "
+            "pyzk set_user() builds a 72-byte packet and is never used. Unlock this "
+            "deliberately to verify it with a disposable test user."
+        ),
+        Capability.WRITE_USER_PASSWORD: _unverified(
+            "The 32-byte credential region's internal layout is not known. Writing a "
+            "PIN uses a candidate offset inferred from the generic ZKTeco record and "
+            "must be proven on a disposable test user before it is trusted."
+        ),
+        Capability.WRITE_USER_CARD: _unsupported(
+            "No card field has been identified in the MB1 record. Card writing stays "
+            "unsupported until the layout is proven (PROTOCOL.md)."
         ),
         Capability.DELETE_USERS: _unverified(
-            "Deletion appears to use the generic delete-user command with a UID "
-            "payload, but destructive testing remains controlled and unproven."
+            "Deletion uses the generic delete-user command with a two-byte UID "
+            "payload, which is device-model independent, but destructive testing "
+            "remains controlled and no MB1 deletion has been performed. Unlock this "
+            "deliberately to verify it with a disposable test user."
         ),
         Capability.CLEAR_ATTENDANCE: _unsupported(
             "Clearing attendance is destructive and is never performed automatically."

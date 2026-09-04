@@ -317,3 +317,53 @@ class TestMockFactory:
         finally:
             device.disconnect()
         assert all(not user.has_credential_data for user in users)
+
+
+# -- mock device factory (PHASE 03) -------------------------------------------
+
+
+def test_mock_factory_devices_remember_what_was_written() -> None:
+    """A mock that forgets each write cannot exercise the write path at all."""
+    from clockmanager.domain.users import UserDraft
+    from clockmanager.services.devices import MockDeviceFactory
+
+    factory = MockDeviceFactory()
+    profile = DeviceProfile(name="Bench clock", host="192.0.2.10")
+
+    writer = factory(profile, allow_writes=True)
+    writer.connect()
+    writer.apply_user_write(UserDraft(user_id="ZZTEST-1", first_name="Test"))
+    writer.disconnect()
+
+    reader = factory(profile)
+    reader.connect()
+    assert any(user.user_id == "ZZTEST-1" for user in reader.get_users())
+    reader.disconnect()
+
+
+def test_mock_factory_does_not_leak_write_unlocks_into_a_read() -> None:
+    """Handing back a reused device must not carry an earlier unlock with it."""
+    from clockmanager.protocol.capabilities import Capability
+    from clockmanager.services.devices import MockDeviceFactory
+
+    factory = MockDeviceFactory()
+    profile = DeviceProfile(name="Bench clock", host="192.0.2.10")
+
+    assert factory(profile, allow_writes=True).capabilities.supports(Capability.WRITE_USERS)
+    assert not factory(profile).capabilities.supports(Capability.WRITE_USERS)
+
+
+def test_two_factories_do_not_share_state() -> None:
+    """Two application contexts must never see each other's mock devices."""
+    from clockmanager.domain.users import UserDraft
+    from clockmanager.services.devices import MockDeviceFactory
+
+    profile = DeviceProfile(name="Bench clock", host="192.0.2.10")
+
+    first = MockDeviceFactory()(profile, allow_writes=True)
+    first.connect()
+    first.apply_user_write(UserDraft(user_id="ZZTEST-1"))
+
+    second = MockDeviceFactory()(profile)
+    second.connect()
+    assert all(user.user_id != "ZZTEST-1" for user in second.get_users())
