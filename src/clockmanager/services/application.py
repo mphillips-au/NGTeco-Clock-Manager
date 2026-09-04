@@ -34,6 +34,7 @@ from clockmanager.services.devices import (
     MockDeviceFactory,
     build_device,
 )
+from clockmanager.services.sync import SyncService
 from clockmanager.services.users import UserService
 
 __all__ = ["ApplicationContext", "ApplicationStatus", "bootstrap"]
@@ -122,6 +123,11 @@ class ApplicationContext:
             writes_enabled=self.config.enable_device_writes,
             credential_writes_enabled=self.config.enable_credential_writes,
         )
+
+    @property
+    def sync(self) -> SyncService:
+        """Attendance synchronisation service (PHASE 04)."""
+        return SyncService(self.database, self.devices)
 
     def status(self) -> ApplicationStatus:
         """Collect a display-ready status snapshot."""

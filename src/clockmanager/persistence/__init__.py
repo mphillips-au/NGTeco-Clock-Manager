@@ -15,17 +15,29 @@ from clockmanager.persistence.models import (
     DeviceRecord,
     DeviceUserRecord,
     SchemaInfo,
+    SyncHistoryRecord,
+)
+from clockmanager.persistence.repositories import (
+    AttendanceRepository,
+    AuditRepository,
+    DeviceRepository,
+    SyncHistoryRepository,
 )
 
 __all__ = [
     "SCHEMA_VERSION",
     "AttendanceEventRecord",
+    "AttendanceRepository",
     "AuditEventRecord",
+    "AuditRepository",
     "Base",
     "Database",
     "DeviceRecord",
+    "DeviceRepository",
     "DeviceUserRecord",
     "SchemaInfo",
+    "SyncHistoryRecord",
+    "SyncHistoryRepository",
     "create_database",
     "initialise_database",
 ]

@@ -27,7 +27,14 @@ from clockmanager.persistence.models import (
 )
 from clockmanager.persistence.repositories import DeviceRepository
 
-EXPECTED_TABLES = {"schema_info", "devices", "device_users", "attendance_events"}
+EXPECTED_TABLES = {
+    "schema_info",
+    "devices",
+    "device_users",
+    "attendance_events",
+    "audit_events",
+    "sync_history",
+}
 
 
 @pytest.fixture

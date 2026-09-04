@@ -13,6 +13,7 @@ from clockmanager.services.devices import (
     build_device,
     build_mock_device,
 )
+from clockmanager.services.sync import StoredAttendance, SyncResult, SyncService, SyncSummary
 from clockmanager.services.users import DeleteImpact, UserService, WriteAvailability
 
 __all__ = [
@@ -28,6 +29,10 @@ __all__ = [
     "DeviceProfile",
     "DeviceService",
     "MockDeviceFactory",
+    "StoredAttendance",
+    "SyncResult",
+    "SyncService",
+    "SyncSummary",
     "UserService",
     "WriteAvailability",
     "bootstrap",

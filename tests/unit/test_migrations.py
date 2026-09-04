@@ -279,3 +279,63 @@ def test_audit_rows_written_before_an_upgrade_survive_it(database) -> None:  # t
     with database.session() as session:
         rows = session.execute(text("SELECT actor, detail FROM audit_events")).all()
         assert rows == [("tester", "kept")]
+
+
+# -- schema version 4: attendance sync (PHASE 04) -------------------------------
+
+V4_ATTENDANCE_COLUMNS = {"received_at", "source", "event_key", "employee_name"}
+
+
+def test_fresh_database_has_sync_columns_and_history(database) -> None:  # type: ignore[no-untyped-def]
+    initialise_database(database)
+    columns = {c["name"] for c in inspect(database.engine).get_columns("attendance_events")}
+    assert columns >= V4_ATTENDANCE_COLUMNS
+    assert "sync_history" in inspect(database.engine).get_table_names()
+
+
+def test_v1_database_gains_sync_columns_and_history(database) -> None:  # type: ignore[no-untyped-def]
+    _build_v1_database(database)
+    initialise_database(database)
+
+    columns = {c["name"] for c in inspect(database.engine).get_columns("attendance_events")}
+    assert columns >= V4_ATTENDANCE_COLUMNS
+    assert "sync_history" in inspect(database.engine).get_table_names()
+
+
+def test_upgrade_backfills_event_keys_and_received_at(database) -> None:  # type: ignore[no-untyped-def]
+    """Rows stored before keys existed get deterministic keys, not blanks."""
+    _build_v1_database(database)
+    initialise_database(database)
+
+    with database.session() as session:
+        rows = session.execute(
+            text("SELECT user_id, event_key, received_at, source FROM attendance_events")
+        ).all()
+    assert len(rows) == 1
+    user_id, event_key, received_at, source = rows[0]
+    assert user_id == "1001"
+    assert event_key and len(event_key) == 64
+    assert received_at is not None
+    assert source == "historical"
+
+
+def test_upgrade_preserves_attendance_rows(database) -> None:  # type: ignore[no-untyped-def]
+    _build_v1_database(database)
+    initialise_database(database)
+
+    with database.session() as session:
+        events = session.execute(text("SELECT user_id, punch, status FROM attendance_events")).all()
+        assert events == [("1001", 0, 3)]
+
+
+def test_sync_migration_is_resumable(database) -> None:  # type: ignore[no-untyped-def]
+    """Re-running after an interruption must not fail on existing columns."""
+    from clockmanager.persistence.migrations import MIGRATIONS as _MIGRATIONS
+
+    initialise_database(database)
+    migration = next(m for m in _MIGRATIONS if m.version == 4)
+    with database.engine.begin() as connection:
+        migration.apply(connection)
+        migration.apply(connection)
+
+    assert "sync_history" in inspect(database.engine).get_table_names()

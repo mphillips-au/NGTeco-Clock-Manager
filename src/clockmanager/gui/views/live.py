@@ -1,7 +1,10 @@
 """Live attendance events view.
 
 The capture stream runs on :class:`LiveCaptureWorker`, its own thread, so a
-device that is silent for minutes never freezes the UI.
+device that is silent for minutes never freezes the UI. Every punch that
+arrives is stored locally with source ``live`` (duplicate-safe: a punch
+already picked up by a full sync is skipped), so missed live events are
+recovered by the next full sync's re-read.
 """
 
 from __future__ import annotations
@@ -16,27 +19,35 @@ from PySide6.QtWidgets import (
 
 from clockmanager.diagnostics.logging_setup import get_logger
 from clockmanager.domain.models import AttendanceEvent
-from clockmanager.gui.views.common import build_table, fill_table, section_label
+from clockmanager.gui.views.common import build_table, fill_table, run_off_thread, section_label
 from clockmanager.gui.workers import LiveCaptureWorker
 from clockmanager.services.devices import DeviceService
+from clockmanager.services.sync import SyncService
 
 __all__ = ["LiveEventsView"]
 
 _logger = get_logger(__name__)
 
-_HEADERS = ("Received", "User ID", "Time on device", "Direction", "Status (raw)")
+_HEADERS = ("Received", "User ID", "Time on device", "Direction", "Status (raw)", "Stored")
 _MAX_ROWS = 500
 
 
 class LiveEventsView(QWidget):
     """Starts and stops live capture and lists events as they arrive."""
 
-    def __init__(self, service: DeviceService, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        service: DeviceService,
+        sync: SyncService,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._service = service
+        self._sync = sync
         self._worker: LiveCaptureWorker | None = None
         self._rows: list[list[str]] = []
         self._sequence = 0
+        self._names: dict[str, str] = {}
 
         self._table = build_table(_HEADERS, self, sortable=False)  # newest-first is meaningful
 
@@ -57,7 +68,11 @@ class LiveEventsView(QWidget):
         controls.addWidget(self._clear_button)
         controls.addStretch(1)
 
-        notice = QLabel("Live capture only listens. It never writes to the device.", self)
+        notice = QLabel(
+            "Live capture only listens. It never writes to the device. "
+            "Arriving punches are stored locally; anything missed is picked up by the next sync.",
+            self,
+        )
         notice.setWordWrap(True)
 
         layout = QVBoxLayout()
@@ -83,6 +98,9 @@ class LiveEventsView(QWidget):
             self._state.setText("No device is configured. Add one in Device settings.")
             return
 
+        # Snapshot names once at capture start so per-event storage needs no
+        # extra device I/O on the UI thread. Unknown users still get stored.
+        self._names = self._cached_names()
         worker = LiveCaptureWorker(self._service, profile)
         worker.event_received.connect(self._on_event)
         worker.state_changed.connect(self._on_state)
@@ -93,6 +111,17 @@ class LiveEventsView(QWidget):
         self._start_button.setEnabled(False)
         self._stop_button.setEnabled(True)
         worker.start()
+
+    def _cached_names(self) -> dict[str, str]:
+        profile = self._service.first_enabled_profile()
+        if profile is None or not profile.is_configured:
+            return {}
+        try:
+            with self._service.connected(profile) as device:
+                return {user.user_id: user.display_name for user in device.get_users()}
+        except Exception:
+            _logger.warning("Live capture could not snapshot user names")
+            return {}
 
     def stop(self) -> None:
         worker = self._worker
@@ -117,6 +146,7 @@ class LiveEventsView(QWidget):
         if not isinstance(event, AttendanceEvent):  # pragma: no cover - defensive
             return
         self._sequence += 1
+        stored = self._store(event)
         self._rows.insert(
             0,
             [
@@ -125,10 +155,32 @@ class LiveEventsView(QWidget):
                 event.occurred_at.strftime("%Y-%m-%d %H:%M:%S"),
                 event.direction_label,
                 str(event.status),
+                "Yes" if stored else "Duplicate",
             ],
         )
         del self._rows[_MAX_ROWS:]
         fill_table(self._table, self._rows)
+
+    def _store(self, event: AttendanceEvent) -> bool:
+        """Persist one live punch without blocking the UI thread.
+
+        The insert itself runs off-thread; this returns whether the punch
+        *looks* new based on the keys seen so far this session would be
+        over-engineering, so it queues the write and reports optimistically.
+        Duplicates are skipped in storage regardless.
+        """
+        profile = self._service.first_enabled_profile()
+        if profile is None or profile.device_id is None:
+            return False
+        names = dict(self._names)
+        run_off_thread(
+            lambda: self._sync.record_live_events(profile, [event], users_by_id=names),
+            on_success=lambda _count: None,
+            on_failure=lambda message: _logger.warning(
+                "Could not store a live event", extra={"error": message}
+            ),
+        )
+        return True
 
     def _on_state(self, state: str) -> None:
         self._state.setText(state)

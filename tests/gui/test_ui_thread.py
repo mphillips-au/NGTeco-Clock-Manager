@@ -97,14 +97,16 @@ def test_users_view_reads_off_the_ui_thread(
 
 
 def test_attendance_view_reads_off_the_ui_thread(
-    qt_app: QApplication, recording: ThreadRecordingService
+    qt_app: QApplication,
+    recording: ThreadRecordingService,
+    configured_context: ApplicationContext,
 ) -> None:
     ui_thread = _ui_thread_id()
-    view = AttendanceView(recording)
+    view = AttendanceView(recording, configured_context.sync)
     view.load()
     drain(qt_app)
 
-    assert recording.threads["read_attendance"] != ui_thread
+    assert recording.threads["first_enabled_profile"] != ui_thread
 
 
 def test_dashboard_reads_off_the_ui_thread(
@@ -162,7 +164,7 @@ def test_no_view_calls_a_device_read_in_its_constructor(
 ) -> None:
     """Constructing a view must not block on the network."""
     UsersView(recording, _user_service(recording))
-    AttendanceView(recording)
+    AttendanceView(recording, configured_context.sync)
     qt_app.processEvents()
 
     device_reads = {"read_users", "read_attendance", "test_connection", "read_device_info"}

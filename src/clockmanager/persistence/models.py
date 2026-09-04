@@ -40,12 +40,13 @@ __all__ = [
     "DeviceRecord",
     "DeviceUserRecord",
     "SchemaInfo",
+    "SyncHistoryRecord",
     "utc_now",
 ]
 
 #: Bumped whenever the schema changes. Every bump needs a matching entry in
 #: :data:`clockmanager.persistence.migrations.MIGRATIONS`.
-SCHEMA_VERSION: Final = 3
+SCHEMA_VERSION: Final = 4
 
 
 def utc_now() -> datetime:
@@ -163,6 +164,17 @@ class AttendanceEventRecord(Base):
 
     The unique constraint is the duplicate-detection key for synchronisation
     (PHASE 04): re-reading the same device history must not create duplicates.
+    ``event_key`` is the stable application-level form of that key: a SHA-256
+    hex digest over the natural key, so a repeated sync can skip what is
+    already stored without comparing timestamps in SQL.
+
+    ``occurred_at`` is the device's own clock: naive device-local time by
+    construction, preserved verbatim. ``received_at`` is when this application
+    stored the row, always UTC. ``source`` records where the punch came from
+    (``historical``/``manual``/``live``/``background``/``recovery``).
+    ``employee_name`` is a display-name snapshot taken at sync time, or ``None``
+    when the user ID matched no known device user. The real employee link is
+    resolved in PHASE 05; no punch is ever dropped for being unknown.
     """
 
     __tablename__ = "attendance_events"
@@ -176,6 +188,7 @@ class AttendanceEventRecord(Base):
             name="uq_attendance_events_natural_key",
         ),
         Index("ix_attendance_events_device_time", "device_id", "occurred_at"),
+        Index("ix_attendance_events_event_key", "device_id", "event_key"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -193,6 +206,20 @@ class AttendanceEventRecord(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, server_default=func.now(), nullable=False
     )
+    # -- PHASE 04 columns ------------------------------------------------------
+    #: When this application stored the row. Always UTC on write; SQLite
+    #: returns naive datetimes on read, so callers must normalise via
+    #: :func:`clockmanager.services.sync.as_aware_utc`.
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, server_default=func.now(), nullable=False
+    )
+    #: Where the punch came from; one of ``SyncSource``'s values.
+    source: Mapped[str] = mapped_column(String(32), default="historical", nullable=False)
+    #: Deterministic duplicate-detection key (SHA-256 hex). Unique per device.
+    event_key: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    #: Display-name snapshot (``"First Last"`` or the user ID) at sync time, or
+    #: ``None`` when the user ID matched no known device user.
+    employee_name: Mapped[str | None] = mapped_column(String(128), default=None)
 
     device: Mapped[DeviceRecord] = relationship(back_populates="attendance_events")
 
@@ -200,6 +227,45 @@ class AttendanceEventRecord(Base):
         return (
             f"AttendanceEventRecord(device_id={self.device_id!r}, "
             f"user_id={self.user_id!r}, occurred_at={self.occurred_at!r})"
+        )
+
+
+class SyncHistoryRecord(Base):
+    """One attendance sync run against one device.
+
+    Append-only, like the audit log: rows are written once and never updated
+    except to stamp ``finished_at``/``outcome`` when the run completes. There
+    is deliberately no update or delete API beyond that.
+
+    ``device_id`` is a plain value rather than a foreign key, so removing a
+    device profile cannot erase the record of what was synced from it (the
+    same reasoning as ``AuditEventRecord``). ``mode`` holds a ``SyncSource``
+    value describing the kind of run (``historical`` for the initial full
+    sync, then ``manual``/``background``/``live``/``recovery``).
+    """
+
+    __tablename__ = "sync_history"
+    __table_args__ = (Index("ix_sync_history_device_started", "device_id", "started_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
+    device_name: Mapped[str | None] = mapped_column(String(120), default=None)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    events_seen: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    events_new: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    events_duplicate: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False)
+    error: Mapped[str] = mapped_column(String(2000), default="", nullable=False)
+
+    def __repr__(self) -> str:
+        return (
+            f"SyncHistoryRecord(device_id={self.device_id!r}, mode={self.mode!r}, "
+            f"outcome={self.outcome!r})"
         )
 
 
