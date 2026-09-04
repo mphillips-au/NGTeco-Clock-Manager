@@ -2,6 +2,81 @@
 
 ## Unreleased
 
+### PHASE 04 — Attendance Synchronization (2026-09-04)
+
+Reliable live + historical attendance sync with local storage, duplicate-safe
+reconciliation and sync history. Verified against the mock device and SQLite;
+no real-device sync has been run yet.
+
+#### Sync core (`clockmanager.sync`, PySide6-free)
+
+- `SyncSource`: `historical` / `manual` / `live` / `background` / `recovery`.
+- `build_event_key`: SHA-256 over the device natural key, stable across the
+  SQLite naive-datetime round trip (aware values normalise to UTC wall-clock
+  seconds; microseconds dropped — no MB1 timestamp carries them).
+- `plan_inserts`: pure reconciliation. Skips known event keys, keys seen
+  within the batch, and natural keys for rows stored before keys existed.
+  Unknown user IDs are planned with a `None` employee snapshot, never dropped.
+- `status` is identity only, never interpreted. Direction derives from `punch`
+  on display.
+
+#### Persistence (schema version 4)
+
+- `attendance_events` gains `received_at` (UTC store time), `source`,
+  `event_key` and `employee_name` (display-name snapshot, `None` when the user
+  is unknown). New unique index on `(device_id, event_key)` alongside the
+  existing natural-key constraint.
+- New append-only `sync_history` table: device (plain value, so removing a
+  profile keeps its history), mode, source, seen/new/duplicate counts,
+  outcome and error. No update or delete API.
+- Forward-only migration backfills `received_at` from `created_at`,
+  `source='historical'`, and deterministic keys for pre-existing rows;
+  resumable and covered by v1-upgrade tests.
+- New `AttendanceRepository` (key sets, savepoint-per-row `try_insert` so one
+  duplicate cannot fail a whole sync, newest-first listing) and
+  `SyncHistoryRepository`.
+
+#### Service (`SyncService`, via `context.sync`)
+
+- `initial_sync` / `incremental_sync` / `manual_sync` / `background_sync` /
+  `recover`, plus `background_sync_if_due` against the profile's sync
+  interval. Every run re-reads the whole device log (the MB1 has no
+  incremental API) and behaves incrementally through duplicate detection.
+- `record_live_event(s)`: stores live-capture punches duplicate-safe.
+- Device failures return failed `SyncResult`s and are recorded in the history,
+  never raised past the GUI. A run after a failure is automatically labelled
+  `recovery`: the re-read picks up everything missed offline or missed by
+  live capture.
+- `received_at` normalised to aware UTC on read; `occurred_at` kept naive as
+  device-local time by design.
+
+#### GUI
+
+- Attendance view shows locally stored punches (works offline) with Sync now
+  and Refresh, a stored-count/IN/OUT/sync-state status line, and a
+  user-or-name filter. New columns: Employee, Source.
+- Live view stores each arriving punch locally (`live` source, duplicate-safe)
+  with a Stored/Duplicate column; names are snapshotted once at capture start
+  so per-event storage needs no extra device I/O.
+- Background sync timer: every minute, runs `background_sync_if_due` off the
+  UI thread for the first enabled profile (skipped while live capture owns
+  the connection). Failures stay in the log/history, never pop up.
+
+#### Tests
+
+- 543 tests, 91% statement coverage. New suites: key stability and
+  naive/aware equivalence, reconciliation (duplicates, in-batch duplicates,
+  natural-key fallback, unknown UID, status handling), service tests for
+  initial/repeated/incremental/manual sync, unknown-UID storage, live
+  store + duplicate + missed-event recovery, failed-sync recording with
+  automatic recovery flag, connect-failure-as-result, history ordering and
+  survival across device removal, summaries, scheduling, UTC normalisation,
+  and v3-row dedupe.
+- Migration tests for v4 (fresh install, v1 upgrade, backfill, preservation,
+  resumability).
+- GUI tests updated for the stored-data views; thread guards extended so the
+  attendance view still performs no I/O on the UI thread.
+
 ### PHASE 03 — MB1 User Management (2026-09-04)
 
 Added user create/update/delete on the NG-MB1, built on the verified 120-byte

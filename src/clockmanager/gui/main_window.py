@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from PySide6.QtCore import QSize, QThreadPool
+from PySide6.QtCore import QSize, QThreadPool, QTimer
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QListWidget,
@@ -54,6 +54,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._context = context
         self._service = context.devices
+        self._sync_service = context.sync
 
         self.setWindowTitle(f"{APPLICATION_NAME} {__version__}")
         self.resize(1100, 720)
@@ -62,8 +63,8 @@ class MainWindow(QMainWindow):
 
         self.dashboard_view = DashboardView(context, self._service, self)
         self.users_view = UsersView(self._service, self._users_service, self)
-        self.attendance_view = AttendanceView(self._service, self)
-        self.live_view = LiveEventsView(self._service, self)
+        self.attendance_view = AttendanceView(self._service, self._sync_service, self)
+        self.live_view = LiveEventsView(self._service, self._sync_service, self)
         self.device_settings_view = DeviceSettingsView(self._service, self)
         self.audit_view = AuditView(context.audit, self)
         self.diagnostics_view = DiagnosticsView(context, self._service, self)
@@ -100,6 +101,41 @@ class MainWindow(QMainWindow):
         self._build_menus()
         self._navigation.setCurrentRow(0)
         self._show_ready_message()
+        self._start_background_sync()
+
+    def _start_background_sync(self) -> None:
+        """Periodically sync when the profile's interval has elapsed.
+
+        Runs off the UI thread and only when due, so a quiet device costs one
+        cheap history read per minute and nothing more. Failures stay in the
+        log and the sync history; they never pop up while the operator works.
+        """
+        self._background_timer = QTimer(self)
+        self._background_timer.setInterval(60_000)
+        self._background_timer.timeout.connect(self._maybe_background_sync)
+        self._background_timer.start()
+
+    def _maybe_background_sync(self) -> None:
+        from clockmanager.gui.views.common import run_off_thread
+
+        profile = self._service.first_enabled_profile()
+        if profile is None or not profile.is_configured or profile.device_id is None:
+            return
+        if self.live_view.is_capturing:
+            return  # live capture owns the connection; the next sync recovers
+
+        def _work() -> str | None:
+            result = self._sync_service.background_sync_if_due(profile)
+            return None if result is None else result.summary
+
+        def _done(summary: object) -> None:
+            if isinstance(summary, str):
+                _logger.info("Background sync finished", extra={"summary": summary})
+
+        def _failed(message: str) -> None:
+            _logger.warning("Background sync failed", extra={"error": message})
+
+        run_off_thread(_work, on_success=_done, on_failure=_failed)
 
     # -- navigation -----------------------------------------------------------
 
@@ -127,6 +163,8 @@ class MainWindow(QMainWindow):
             self.dashboard_view.refresh()
         elif entry.widget is self.audit_view:
             self.audit_view.refresh()
+        elif entry.widget is self.attendance_view:
+            self.attendance_view.load()
         elif entry.widget is self.device_settings_view:
             self.device_settings_view.refresh()
         elif entry.widget is self.diagnostics_view:
@@ -201,6 +239,9 @@ class MainWindow(QMainWindow):
     # -- lifecycle ------------------------------------------------------------
 
     def closeEvent(self, event: Any) -> None:  # noqa: N802 - Qt override
+        timer = getattr(self, "_background_timer", None)
+        if timer is not None:
+            timer.stop()
         self.live_view.shutdown()
         QThreadPool.globalInstance().waitForDone(5000)
         super().closeEvent(event)

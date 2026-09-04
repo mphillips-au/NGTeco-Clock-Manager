@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy import Connection, inspect, text
 
@@ -104,6 +105,125 @@ def _migrate_to_3(connection: Connection) -> None:
     )
 
 
+def _migrate_to_4(connection: Connection) -> None:
+    """Add PHASE 04 attendance sync columns and the sync history table.
+
+    Additive only: existing attendance rows keep their data and are backfilled
+    in place. ``received_at`` falls back to ``created_at`` for rows stored
+    before it existed; ``source`` defaults to ``historical``; ``event_key``
+    is backfilled in Python (it is a SHA-256 over the natural key, which
+    SQLite cannot compute); ``employee_name`` stays NULL until the next sync
+    snapshots it.
+    """
+    from clockmanager.sync.keys import build_event_key
+
+    _add_column_if_missing(
+        connection,
+        "attendance_events",
+        "received_at",
+        "DATETIME NOT NULL DEFAULT '1970-01-01 00:00:00'",
+    )
+    _add_column_if_missing(
+        connection, "attendance_events", "source", "VARCHAR(32) NOT NULL DEFAULT 'historical'"
+    )
+    _add_column_if_missing(
+        connection, "attendance_events", "event_key", "VARCHAR(128) NOT NULL DEFAULT ''"
+    )
+    _add_column_if_missing(connection, "attendance_events", "employee_name", "VARCHAR(128)")
+
+    # Existing rows predate received_at: preserve their original store time.
+    connection.execute(
+        text(
+            "UPDATE attendance_events SET received_at = created_at "
+            "WHERE received_at = '1970-01-01 00:00:00'"
+        )
+    )
+
+    # Backfill deterministic keys for rows stored before keys existed. The
+    # natural-key unique constraint already guarantees these rows are distinct,
+    # so the generated keys are distinct too.
+    rows = connection.execute(
+        text(
+            "SELECT id, device_id, user_id, occurred_at, punch, status "
+            "FROM attendance_events WHERE event_key = ''"
+        )
+    ).all()
+    for row_id, device_id, user_id, occurred_at, punch, status in rows:
+        moment = occurred_at
+        if isinstance(moment, str):
+            # SQLite stores datetimes as text; parse the common shapes.
+            moment = _parse_stored_datetime(moment)
+        key = build_event_key(
+            device_id=int(device_id),
+            user_id=str(user_id),
+            occurred_at=moment,
+            punch=int(punch),
+            status=int(status),
+        )
+        connection.execute(
+            text("UPDATE attendance_events SET event_key = :key WHERE id = :id"),
+            {"key": key, "id": row_id},
+        )
+
+    connection.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_attendance_events_event_key "
+            "ON attendance_events (device_id, event_key)"
+        )
+    )
+    connection.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_attendance_events_event_key "
+            "ON attendance_events (device_id, event_key)"
+        )
+    )
+    connection.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS sync_history (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                device_id INTEGER,
+                device_name VARCHAR(120),
+                started_at DATETIME NOT NULL,
+                finished_at DATETIME,
+                mode VARCHAR(32) NOT NULL,
+                source VARCHAR(32) NOT NULL,
+                events_seen INTEGER NOT NULL DEFAULT 0,
+                events_new INTEGER NOT NULL DEFAULT 0,
+                events_duplicate INTEGER NOT NULL DEFAULT 0,
+                outcome VARCHAR(32) NOT NULL,
+                error VARCHAR(2000) NOT NULL DEFAULT ''
+            )
+            """
+        )
+    )
+    connection.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_sync_history_device_started "
+            "ON sync_history (device_id, started_at)"
+        )
+    )
+
+
+def _parse_stored_datetime(value: str) -> datetime:
+    """Parse a SQLite-stored datetime string back into a datetime."""
+    from datetime import datetime as _datetime
+
+    text_value = value.strip()
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S.%f",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S.%f",
+        "%Y-%m-%dT%H:%M:%S",
+    ):
+        try:
+            return _datetime.strptime(text_value[: len(fmt)], fmt)  # noqa: DTZ007
+        except ValueError:
+            continue
+    # Last resort: ISO format with timezone info.
+    return _datetime.fromisoformat(text_value)
+
+
 #: Ordered migrations. Index by target version; version 1 is the initial schema
 #: and therefore has no migration.
 MIGRATIONS: tuple[Migration, ...] = (
@@ -116,6 +236,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=3,
         description="Add the append-only audit_events table",
         apply=_migrate_to_3,
+    ),
+    Migration(
+        version=4,
+        description="Add attendance sync columns (received_at, source, event_key, employee) and sync_history",
+        apply=_migrate_to_4,
     ),
 )
 

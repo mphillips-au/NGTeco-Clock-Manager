@@ -130,28 +130,45 @@ class TestAttendanceView:
     def test_loads_attendance(
         self, qt_app: QApplication, configured_context: ApplicationContext
     ) -> None:
-        view = AttendanceView(configured_context.devices)
+        configured_context.sync.manual_sync(
+            configured_context.devices.first_enabled_profile()  # type: ignore[arg-type]
+        )
+        view = AttendanceView(configured_context.devices, configured_context.sync)
         view.load()
         drain(qt_app)
 
         assert view._table.rowCount() > 0
-        assert "IN" in view._status.text()
-        assert "OUT" in view._status.text()
+        assert "stored" in view._status.text()
+        assert "IN" in _table_text(view._table)
+        assert "OUT" in _table_text(view._table)
 
     def test_shows_raw_status_column(
         self, qt_app: QApplication, configured_context: ApplicationContext
     ) -> None:
-        view = AttendanceView(configured_context.devices)
+        view = AttendanceView(configured_context.devices, configured_context.sync)
         headers = [
             view._table.horizontalHeaderItem(column).text()
             for column in range(view._table.columnCount())
         ]
         assert "Status (raw)" in headers
 
+    def test_sync_now_stores_device_history(
+        self, qt_app: QApplication, configured_context: ApplicationContext
+    ) -> None:
+        view = AttendanceView(configured_context.devices, configured_context.sync)
+        view.sync_now()
+        drain(qt_app)
+        drain(qt_app)  # sync result triggers a refresh load
+
+        assert view._table.rowCount() > 0
+
     def test_filter_narrows_the_list(
         self, qt_app: QApplication, configured_context: ApplicationContext
     ) -> None:
-        view = AttendanceView(configured_context.devices)
+        configured_context.sync.manual_sync(
+            configured_context.devices.first_enabled_profile()  # type: ignore[arg-type]
+        )
+        view = AttendanceView(configured_context.devices, configured_context.sync)
         view.load()
         drain(qt_app)
         total = view._table.rowCount()
@@ -361,7 +378,7 @@ class TestLiveEventsView:
     def test_starts_and_stops(
         self, qt_app: QApplication, configured_context: ApplicationContext
     ) -> None:
-        view = LiveEventsView(configured_context.devices)
+        view = LiveEventsView(configured_context.devices, configured_context.sync)
         view.start()
         drain(qt_app)
         view.shutdown()
@@ -371,7 +388,7 @@ class TestLiveEventsView:
     def test_reports_when_no_device_is_configured(
         self, qt_app: QApplication, mock_context: ApplicationContext
     ) -> None:
-        view = LiveEventsView(mock_context.devices)
+        view = LiveEventsView(mock_context.devices, mock_context.sync)
         view.start()
         drain(qt_app)
         assert "No device is configured" in view._state.text()
@@ -380,4 +397,4 @@ class TestLiveEventsView:
     def test_shutdown_is_safe_when_never_started(
         self, qt_app: QApplication, configured_context: ApplicationContext
     ) -> None:
-        LiveEventsView(configured_context.devices).shutdown()
+        LiveEventsView(configured_context.devices, configured_context.sync).shutdown()

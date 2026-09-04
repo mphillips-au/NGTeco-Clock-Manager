@@ -2,11 +2,11 @@
 
 ## Current phase
 
-PHASE 03 — MB1 User Management: **complete**.
+PHASE 04 — Attendance synchronisation: **complete**.
 
 ## Next phase
 
-PHASE 04 — Attendance synchronisation.
+PHASE 05 — Employees / timesheets / payroll.
 
 ## What exists now
 
@@ -26,10 +26,12 @@ Layer separation is in place and enforced by tests:
   `DeviceConnectionSettings`, the 120-byte user parser **and builder**,
   attendance and live-event parsers, capability model, retry/reconnect,
   structured exceptions, and `MockAttendanceDevice`
-- `clockmanager.sync` — boundary only (PHASE 04)
+- `clockmanager.sync` — deterministic event keys (SHA-256 over the natural
+  key), pure reconciliation planning and the `SyncSource`
+  (`historical`/`manual`/`live`/`background`/`recovery`) vocabulary
 - `clockmanager.services` — `bootstrap()`, `ApplicationContext`,
   `ApplicationStatus`, `DeviceService`, `UserService`, `AuditService`,
-  `MockDeviceFactory`
+  `SyncService`, `MockDeviceFactory`
 - `clockmanager.security` — redaction helpers
 - `clockmanager.diagnostics` — structured JSON logging with a redacting filter
   on every handler
@@ -45,8 +47,8 @@ built-in mock device with no hardware attached. The mock now keeps its contents
 for the life of the application context, so the write path can be exercised end
 to end without a clock.
 
-Database schema version 3: `schema_info`, `devices`, `device_users`,
-`attendance_events`, `audit_events`. No user credential, card or biometric
+Database schema version 4: `schema_info`, `devices`, `device_users`,
+`attendance_events`, `audit_events`, `sync_history`. No user credential, card or biometric
 column exists in any of them.
 
 ## User management (PHASE 03)
@@ -78,6 +80,33 @@ Deleting shows the exact user read live from the device, the number of
 attendance records it has on the device, and a warning that those records are
 not deleted; it requires an explicit confirmation, verifies the removal by
 re-reading, and audits it.
+
+## Attendance synchronisation (PHASE 04)
+
+Attendance is stored locally and reconciled against the device on every sync.
+The MB1 exposes no incremental API, so each sync re-reads the whole device
+log and inserts only what is not already stored.
+
+What each sync does:
+
+- reads the device's user list (for the employee-name snapshot) and its full
+  attendance log, then always disconnects
+- plans inserts with deterministic event keys (SHA-256 over the natural key),
+  falling back to the natural key for rows stored before keys existed
+- stores every punch, including unknown user IDs (employee snapshot `None`,
+  resolved in PHASE 05) — nothing is dropped for being unknown
+- records a `sync_history` row: mode, source, seen/new/duplicate counts,
+  outcome and error
+
+Sources: `historical` (initial full sync and incremental re-reads), `manual`
+(operator "Sync now"), `live` (live-capture punches), `background` (periodic
+automatic sync when the profile's interval has elapsed), `recovery` (the first
+successful run after a failure, which re-reads everything missed offline).
+
+Device failures are returned as failed results and recorded in the history,
+never raised past the GUI; the next successful run picks up whatever was
+missed, which is the offline recovery and the missed-live-event recovery.
+Direction is derived from `punch` on display; `status` is stored verbatim.
 
 ## Verified before this repository build-out
 
@@ -141,14 +170,21 @@ Known device:
   (PHASE 07), so diagnostic detail is still gated on the `developer_mode` flag
   rather than on a user's role, and the audit log is visible to anyone who can
   open the application.
-- `clockmanager.sync` is still an empty boundary.
-- Attendance is read live from the device and displayed; nothing is stored
-  locally yet. Local storage and reconciliation are PHASE 04.
+- `clockmanager.sync` now implements keys, reconciliation and sources; the
+  headless/Linux service path uses it through `context.sync` like the GUI.
+- Attendance is stored locally and reconciled on every sync; the Attendance
+  view works offline. Nothing has been run against the real NG-MB1 yet — the
+  sync is proven against fixtures, the fake transport and the mock device
+  only.
 - Employees, timesheets, reports and exports do not exist. Windows
   packaging/installer is not started (PHASE 13).
-- SQLite timestamps are stored as timezone-aware UTC on write, but SQLite
-  returns naive datetimes on read. Callers must not assume tzinfo survives a
-  round trip until this is addressed.
+- SQLite returns naive datetimes on read. `received_at` is normalised to
+  aware UTC on read (`as_aware_utc`); `occurred_at` stays naive deliberately
+  because it is device-local time with no known timezone — do not label it
+  UTC. Event keys normalise both forms to the same wall-clock seconds, so
+  duplicate detection is unaffected.
+- The employee snapshot on stored punches is a display-name string, not a
+  link: the real employee table and timesheet joins are PHASE 05.
 
 ## Protocol discoveries
 
