@@ -256,7 +256,6 @@ QComboBox QAbstractItemView {{
 }}
 QCheckBox, QRadioButton {{ background: transparent; color: {p.text}; spacing: 7px; }}
 QCheckBox:disabled, QRadioButton:disabled {{ color: {p.text_muted}; }}
-QCheckBox::indicator, QRadioButton::indicator {{ width: 15px; height: 15px; }}
 QCheckBox[focusVisible="true"]::indicator:focus,
 QRadioButton[focusVisible="true"]::indicator:focus {{ border: 2px solid {p.accent}; }}
 

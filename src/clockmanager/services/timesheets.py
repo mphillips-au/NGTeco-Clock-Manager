@@ -15,6 +15,7 @@ from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from clockmanager.diagnostics.logging_setup import get_logger
+from clockmanager.domain.auth import Permission, Role, require
 from clockmanager.domain.payroll import (
     PayPeriod,
     PaySchedule,
@@ -123,6 +124,7 @@ class TimesheetService:
     def create_schedule(
         self,
         *,
+        requester_role: Role | str | None = None,
         name: str,
         schedule_type: PayScheduleType,
         anchor_date: date,
@@ -135,6 +137,8 @@ class TimesheetService:
         weekly_overtime_hours: float | None = None,
         activate: bool = False,
     ) -> PayScheduleProfile:
+        if requester_role is not None:
+            require(requester_role, Permission.MANAGE_PAYROLL)
         if not name.strip():
             raise ClockManagerError("Pay schedule name must not be empty.")
         # Validate eagerly through the domain types so bad config fails here,
@@ -185,7 +189,17 @@ class TimesheetService:
             row = PayScheduleRepository(session).get(schedule_id)
             return None if row is None else self._to_profile(row)
 
-    def activate_schedule(self, schedule_id: int) -> PayScheduleProfile:
+    def activate_schedule(
+        self, schedule_id: int, *, requester_role: Role | str | None = None
+    ) -> PayScheduleProfile:
+        """Make one schedule the active one.
+
+        ``requester_role`` enforces the payroll permission; ``None`` keeps the
+        legacy path for callers without an interactive identity, matching
+        every other service.
+        """
+        if requester_role is not None:
+            require(requester_role, Permission.MANAGE_PAYROLL)
         with self._database.session() as session:
             row = PayScheduleRepository(session).set_active(schedule_id)
             if row is None:

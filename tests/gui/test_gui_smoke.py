@@ -23,10 +23,9 @@ EXPECTED_VIEWS = [
     "Employees",
     "Timesheets",
     "Reports",
-    "Device settings",
     "Audit log",
-    "Diagnostics",
     "Backup",
+    "Settings",
 ]
 
 
@@ -83,14 +82,17 @@ def test_navigation_switches_the_visible_view(
         window.close()
 
 
-def test_navigating_to_diagnostics_reports_live_capture_state(
+def test_navigating_to_settings_reports_live_capture_state(
     qt_app: QApplication, mock_context: ApplicationContext
 ) -> None:
+    """Diagnostics is a section of Settings, and still learns the capture
+    state when the hub is opened."""
     window = MainWindow(mock_context)
     try:
         drain(qt_app)
-        window.show_view("Diagnostics")
+        window.show_settings_section("Developer")
         drain(qt_app)
+        assert window.settings_view.section_labels[-1] == "Developer"
         assert window.diagnostics_view._live_state == "Not running"
     finally:
         window.close()
