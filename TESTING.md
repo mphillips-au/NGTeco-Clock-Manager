@@ -87,7 +87,9 @@ command. Nothing in that suite writes.
 
 ### PHASE 14 status
 
-Everything in the QA list above has been exercised against the real NG-MB1
-except **install** and **upgrade**, which need the PHASE 13 packaging work,
-and **user writes**, which stay off by default and unproven. See `STATUS.md`
-("Verified on hardware") for what each one showed.
+Everything in the QA list above has been exercised except **user writes**,
+which stay off by default and unproven. Install and upgrade were covered once
+the Windows packaging work landed: the packaged executable migrated a schema-7
+database forward with no data loss, and a silent install/uninstall cycle left
+the user data directory untouched. See `STATUS.md` ("Verified on hardware")
+for what each one showed.

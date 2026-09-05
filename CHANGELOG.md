@@ -82,15 +82,36 @@ day) · malformed user, attendance, timestamp and live-event payloads refused
 rather than guessed at · the 120-byte builder's validation, and the standing
 guarantee that pyzk's 72-byte `set_user()` is never called.
 
-#### Not tested
+#### Packaging and installer
 
-The **installer**, because PHASE 13 has not been done: no build script, spec
-file or installer exists in the repository. Clean install, upgrade and
-launch-from-shortcut remain untested and must be covered when PHASE 13 lands.
+The Windows packaging work landed mid-session, so the installer was tested
+against these changes rather than deferred:
+
+- Release PyInstaller build and Inno Setup installer both compile.
+- The frozen executable survives cp437/cp850/cp1252 for `--help`,
+  `--version`, `--headless` and the packaging session's own
+  `--firewall-info`, which carries the same em dash that used to crash the
+  CLI. That fix protects the new packaging commands too.
+- **Upgrade without data loss**: a schema-7 database left by a previous
+  install was opened by the packaged `clockmanager.exe`, migrated to 8 in
+  place, and kept every device, employee, punch and event key. Only the
+  bogus `device_uid` indices were cleared, which is the point of migration 8.
+- Silent install -> launch -> silent uninstall: the program directory and
+  Start Menu shortcuts are removed and `%LOCALAPPDATA%\NGTecoClockManager`
+  (database, logs, backups) is left untouched.
+- `pyzk` and the whole `clockmanager.protocol` package, including the fixes
+  above, are confirmed present inside the installed executable's archive, so
+  the device path ships complete.
+
+#### Not tested
 
 The **write path** (create/update/delete/PIN) was deliberately not exercised.
 It stays off by default and UNVERIFIED; proving it needs a disposable
 `ZZTEST-` account and the opt-in write suite.
+
+A device sync **driven from the installed GUI** was not performed: the frozen
+executable exposes no sync command, so the device work was done against the
+same code from source. The bundle contents were verified instead.
 ### PHASE 14 — Windows Packaging (2026-09-05)
 
 Production Windows packaging: PyInstaller builds, an Inno Setup 6

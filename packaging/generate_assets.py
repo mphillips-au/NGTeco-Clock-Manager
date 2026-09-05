@@ -57,19 +57,37 @@ def render_icon_image(size: int) -> QImage:
     painter.drawEllipse(center, radius, radius)
 
     # 3. Dial tick marks (12, 3, 6, 9)
-    painter.setPen(QPen(QColor(241, 245, 249), 4 * scale, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-    painter.drawLine(QPointF(center.x(), center.y() - radius + 10 * scale), QPointF(center.x(), center.y() - radius + 22 * scale))
-    painter.drawLine(QPointF(center.x() + radius - 22 * scale, center.y()), QPointF(center.x() + radius - 10 * scale, center.y()))
-    painter.drawLine(QPointF(center.x(), center.y() + radius - 22 * scale), QPointF(center.x(), center.y() + radius - 10 * scale))
-    painter.drawLine(QPointF(center.x() - radius + 10 * scale, center.y()), QPointF(center.x() - radius + 22 * scale, center.y()))
+    painter.setPen(
+        QPen(QColor(241, 245, 249), 4 * scale, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+    )
+    painter.drawLine(
+        QPointF(center.x(), center.y() - radius + 10 * scale),
+        QPointF(center.x(), center.y() - radius + 22 * scale),
+    )
+    painter.drawLine(
+        QPointF(center.x() + radius - 22 * scale, center.y()),
+        QPointF(center.x() + radius - 10 * scale, center.y()),
+    )
+    painter.drawLine(
+        QPointF(center.x(), center.y() + radius - 22 * scale),
+        QPointF(center.x(), center.y() + radius - 10 * scale),
+    )
+    painter.drawLine(
+        QPointF(center.x() - radius + 10 * scale, center.y()),
+        QPointF(center.x() - radius + 22 * scale, center.y()),
+    )
 
     # 4. Clock hands (pointing at 9:00 - start of day punch IN)
     # Hour hand (pointing to 9 o'clock)
-    painter.setPen(QPen(QColor(248, 250, 252), 6 * scale, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+    painter.setPen(
+        QPen(QColor(248, 250, 252), 6 * scale, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+    )
     painter.drawLine(center, QPointF(center.x() - 44 * scale, center.y()))
 
     # Minute hand (pointing to 12 o'clock)
-    painter.setPen(QPen(QColor(56, 189, 248), 4.5 * scale, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+    painter.setPen(
+        QPen(QColor(56, 189, 248), 4.5 * scale, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+    )
     painter.drawLine(center, QPointF(center.x(), center.y() - 60 * scale))
 
     # Center pin
@@ -90,7 +108,13 @@ def render_icon_image(size: int) -> QImage:
     painter.drawEllipse(badge_center, badge_radius, badge_radius)
 
     # Checkmark inside badge
-    check_pen = QPen(QColor(255, 255, 255), 6 * scale, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+    check_pen = QPen(
+        QColor(255, 255, 255),
+        6 * scale,
+        Qt.PenStyle.SolidLine,
+        Qt.PenCapStyle.RoundCap,
+        Qt.PenJoinStyle.RoundJoin,
+    )
     painter.setPen(check_pen)
     painter.setBrush(Qt.BrushStyle.NoBrush)
     points = [
@@ -114,6 +138,7 @@ def save_multisize_ico(images: list[QImage], target_path: Path) -> None:
     offset = 6 + len(images) * 16
     for img in images:
         from PySide6.QtCore import QBuffer, QIODevice
+
         buffer = QBuffer()
         buffer.open(QIODevice.OpenModeFlag.WriteOnly)
         img.save(buffer, "PNG")

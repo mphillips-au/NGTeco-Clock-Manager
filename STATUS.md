@@ -241,6 +241,13 @@ Everything below actually ran against the device, not a fixture:
 - **Roles, backup/restore, migrations, reports/exports, timesheets/DST** were
   verified alongside, against local storage (see the PHASE 14 CHANGELOG entry).
 
+- **Packaging** — release build and Inno Setup installer compile against these
+  changes; the frozen exe is code-page safe; a schema-7 database migrated to 8
+  in place under the packaged executable with every device, employee, punch
+  and event key intact; silent install/uninstall leaves
+  `%LOCALAPPDATA%\NGTecoClockManager` untouched; `pyzk` and
+  `clockmanager.protocol` ship inside the installed binary.
+
 Still unproven on hardware: the **write path** (create/update/delete/PIN) and
 everything biometric or card related. Those stay locked and UNVERIFIED.
 
