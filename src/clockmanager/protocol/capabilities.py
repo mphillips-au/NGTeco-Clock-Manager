@@ -16,6 +16,7 @@ from clockmanager.protocol.errors import DeviceCapabilityError
 
 __all__ = [
     "NG_MB1_CAPABILITIES",
+    "WRITE_CAPABILITIES",
     "Capability",
     "CapabilityState",
     "DeviceCapabilities",
@@ -55,6 +56,11 @@ class Support(StrEnum):
     #: verified on real hardware with disposable accounts. Usable, and labelled
     #: everywhere it appears so nobody mistakes it for a verified capability.
     OPERATOR_ENABLED = "operator-enabled (unverified)"
+    #: The device is known to support this, but this installation has not
+    #: enabled it. Evidence and permission are different questions: proving a
+    #: write works on hardware must not, by itself, start letting every
+    #: installation write. Not usable until an operator unlocks it.
+    OPERATOR_LOCKED = "supported (not enabled here)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,12 +72,18 @@ class CapabilityState:
 
     @property
     def usable(self) -> bool:
+        """Whether this device may actually be asked to do it right now."""
         return self.support in (Support.SUPPORTED, Support.OPERATOR_ENABLED)
 
     @property
     def proven(self) -> bool:
-        """Whether real hardware has actually demonstrated this."""
-        return self.support is Support.SUPPORTED
+        """Whether real hardware has actually demonstrated this.
+
+        Independent of :attr:`usable`. A capability can be proven and still
+        locked (:data:`Support.OPERATOR_LOCKED`), or usable and still unproven
+        (:data:`Support.OPERATOR_ENABLED`).
+        """
+        return self.support in (Support.SUPPORTED, Support.OPERATOR_LOCKED)
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,9 +130,33 @@ class DeviceCapabilities:
                 )
             if current.support is Support.SUPPORTED:
                 continue
+            if current.support is Support.OPERATOR_LOCKED:
+                # Proven on hardware; the lock was policy, not doubt. Unlocking
+                # it restores the truth rather than labelling it unverified.
+                states[capability] = CapabilityState(Support.SUPPORTED, current.reason)
+                continue
             states[capability] = CapabilityState(
                 Support.OPERATOR_ENABLED,
                 f"{reason} Underlying state: {current.reason}",
+            )
+        return DeviceCapabilities(states=states)
+
+    def locked(self, capabilities: Iterable[Capability], *, reason: str) -> DeviceCapabilities:
+        """Return a copy with proven ``capabilities`` withheld from this install.
+
+        This is the counterpart to :meth:`unlocked`, and it is what keeps a
+        capability graduating to :data:`Support.SUPPORTED` from quietly turning
+        writing on everywhere. Only a proven capability can be locked this way;
+        anything already unusable is left exactly as it is, so locking can never
+        make an unverified capability look better than it is.
+        """
+        states = dict(self.states)
+        for capability in capabilities:
+            current = self.state(capability)
+            if current.support is not Support.SUPPORTED:
+                continue
+            states[capability] = CapabilityState(
+                Support.OPERATOR_LOCKED, f"{reason} Device support: {current.reason}"
             )
         return DeviceCapabilities(states=states)
 
@@ -158,37 +194,63 @@ NG_MB1_CAPABILITIES = DeviceCapabilities(
         Capability.READ_ATTENDANCE: _verified("Historical attendance retrieval verified."),
         Capability.LIVE_CAPTURE: _verified("Live attendance capture verified."),
         Capability.SET_TIME: _unverified(
-            "Writing the device clock has not been exercised on real hardware."
+            "Writing the device clock has not been exercised on real hardware. "
+            "PHASE 15 found the device clock correct to within a minute, so there "
+            "was no safe pretext to change it; the operation stays unproven rather "
+            "than being exercised for its own sake."
         ),
-        Capability.WRITE_USERS: _unverified(
-            "An application-owned 120-byte write path exists and is covered by unit "
-            "tests (PHASE 03), but no MB1 has yet accepted a record from it. Generic "
-            "pyzk set_user() builds a 72-byte packet and is never used. Unlock this "
-            "deliberately to verify it with a disposable test user."
+        Capability.WRITE_USERS: _verified(
+            "PHASE 15: the real NG-MB1 accepted application-built 120-byte records "
+            "through CMD_USER_WRQ and applied them. Create, rename and privilege "
+            "changes (0 and 14, both directions) were all read back correct on "
+            "disposable test users. Generic pyzk set_user() builds a 72-byte packet "
+            "and is still never used. Writing remains OFF by default: the capability "
+            "says the device accepts a record, not that an installation should send "
+            "one (CLOCKMANAGER_ENABLE_DEVICE_WRITES)."
         ),
-        Capability.WRITE_USER_PASSWORD: _unverified(
-            "The 32-byte credential region's internal layout is not known. Writing a "
-            "PIN uses a candidate offset inferred from the generic ZKTeco record and "
-            "must be proven on a disposable test user before it is trusted."
+        Capability.WRITE_USER_PASSWORD: _verified(
+            "PHASE 15: the PIN is an 8-byte NUL-padded ASCII field at record bytes "
+            "3:11, proven on a disposable test user. Setting '1234' stored exactly "
+            "those digits and nothing else in the 32-byte region; clearing zeroed it; "
+            "a name-only update preserved it. Still gated separately by "
+            "CLOCKMANAGER_ENABLE_CREDENTIAL_WRITES."
         ),
         Capability.WRITE_USER_CARD: _unsupported(
             "No card field has been identified in the MB1 record. Card writing stays "
             "unsupported until the layout is proven (PROTOCOL.md)."
         ),
-        Capability.DELETE_USERS: _unverified(
-            "Deletion uses the generic delete-user command with a two-byte UID "
-            "payload, which is device-model independent, but destructive testing "
-            "remains controlled and no MB1 deletion has been performed. Unlock this "
-            "deliberately to verify it with a disposable test user."
+        Capability.DELETE_USERS: _verified(
+            "PHASE 15: CMD_DELETE_USER with a two-byte little-endian UID removed "
+            "disposable test users at UID 3 and UID 900 and the removal was confirmed "
+            "by re-reading. One caveat is recorded in PROTOCOL.md: a record written "
+            "with an over-long user ID could NOT be deleted afterwards, which is why "
+            "the writable user-ID length is now bounded."
         ),
         Capability.CLEAR_ATTENDANCE: _unsupported(
             "Clearing attendance is destructive and is never performed automatically."
         ),
-        Capability.READ_FINGERPRINT: _unverified(
-            "Fingerprint template handling has not been reverse engineered."
+        Capability.READ_FINGERPRINT: _verified(
+            "PHASE 15: the fingerprint store can be ENUMERATED on the real NG-MB1 "
+            "via CMD_DB_RRQ/FCT_FINGERTMP -- device UID, finger index, valid flag "
+            "and template length per entry, with UIDs matching the 120-byte user "
+            "records. This capability covers enumeration only. Reading, writing or "
+            "enrolling a template is NOT supported and no such operation exists in "
+            "the adapter; template bytes are discarded inside the parser."
         ),
         Capability.READ_FACE: _unverified(
-            "Face template handling has not been reverse engineered."
+            "PHASE 15: the device reports a face count and ZKFaceVersion=35 / "
+            "FaceFunOn=1 through option reads, but pyzk 0.9 has no face-template "
+            "API and no command, payload or structure is known for reading one. "
+            "There is nothing to implement from."
         ),
     }
+)
+
+
+#: The capabilities that change the device and therefore stay locked unless an
+#: installation deliberately enables them, however well proven they are.
+WRITE_CAPABILITIES: tuple[Capability, ...] = (
+    Capability.WRITE_USERS,
+    Capability.DELETE_USERS,
+    Capability.WRITE_USER_PASSWORD,
 )

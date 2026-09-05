@@ -36,16 +36,21 @@ def build(**kwargs: object) -> MockAttendanceDevice:
 
 class TestGates:
     def test_writes_are_locked_by_default(self) -> None:
+        """Proving the write path on hardware must not turn it on everywhere."""
         device = build()
-        assert device.capabilities.state(Capability.WRITE_USERS).support is Support.UNVERIFIED
+        state = device.capabilities.state(Capability.WRITE_USERS)
+        assert state.support is Support.OPERATOR_LOCKED
+        assert not state.usable
+        assert state.proven, "the device does support it; this install just may not"
         with pytest.raises(DeviceCapabilityError):
             device.apply_user_write(UserDraft(user_id="NEW-1"))
 
-    def test_unlocking_reports_operator_enabled(self) -> None:
+    def test_unlocking_reports_the_capability_as_proven(self) -> None:
         device = build(allow_writes=True)
         state = device.capabilities.state(Capability.WRITE_USERS)
-        assert state.support is Support.OPERATOR_ENABLED
-        assert not state.proven
+        assert state.support is Support.SUPPORTED
+        assert state.usable
+        assert state.proven
 
     def test_credential_writes_need_their_own_unlock(self) -> None:
         device = build(allow_writes=True)

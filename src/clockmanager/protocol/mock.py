@@ -33,6 +33,7 @@ from clockmanager.domain.users import (
 from clockmanager.protocol.builders import RawUserRecord, build_user_record
 from clockmanager.protocol.capabilities import (
     NG_MB1_CAPABILITIES,
+    WRITE_CAPABILITIES,
     Capability,
     DeviceCapabilities,
 )
@@ -85,21 +86,24 @@ def _without_credential(record: bytes) -> bytes:
 
 
 def _mock_capabilities(*, allow_writes: bool, allow_credential_writes: bool) -> DeviceCapabilities:
-    """Mirror the real adapter's capability unlock, gates included."""
+    """Mirror the real adapter's capability policy, locks and unlocks included."""
+    if allow_credential_writes and not allow_writes:
+        raise DeviceValidationError(
+            "Credential writing cannot be unlocked while user writing is locked."
+        )
     unlocked: list[Capability] = []
     if allow_writes:
         unlocked.extend((Capability.WRITE_USERS, Capability.DELETE_USERS))
     if allow_credential_writes:
-        if not allow_writes:
-            raise DeviceValidationError(
-                "Credential writing cannot be unlocked while user writing is locked."
-            )
         unlocked.append(Capability.WRITE_USER_PASSWORD)
-    if not unlocked:
-        return NG_MB1_CAPABILITIES
-    return NG_MB1_CAPABILITIES.unlocked(
-        unlocked, reason="Mock device with writes enabled for testing."
+
+    still_locked = [c for c in WRITE_CAPABILITIES if c not in unlocked]
+    capabilities = NG_MB1_CAPABILITIES.locked(
+        still_locked, reason="Mock device with writing left locked."
     )
+    if not unlocked:
+        return capabilities
+    return capabilities.unlocked(unlocked, reason="Mock device with writes enabled for testing.")
 
 
 def sample_settings(name: str = "Mock clock") -> DeviceConnectionSettings:

@@ -30,11 +30,22 @@ __all__ = [
     "describe_changes",
 ]
 
-#: Byte budgets of the verified MB1 record fields.
+#: Byte budgets for what the device will actually keep.
+#:
+#: These are deliberately smaller than the corresponding regions of the
+#: 120-byte record. The record has room the device does not honour, and
+#: PHASE 15 established on hardware what the real limits are:
+#:
+#: * a 30-character last name came back truncated to 23 characters
+#: * the device reports ``~PIN2Width=9``, and a 13-character user ID left a
+#:   record that could not be deleted and wedged the protocol service until the
+#:   clock was rebooted
+#:
+#: See ``PROTOCOL.md`` and ``phases/PHASE-15.md``.
 FIRST_NAME_MAX_BYTES: Final = 24
-LAST_NAME_MAX_BYTES: Final = 37
-USER_ID_MAX_BYTES: Final = 24
-#: The candidate credential field is 8 bytes (UNVERIFIED, see ``PROTOCOL.md``).
+LAST_NAME_MAX_BYTES: Final = 23
+USER_ID_MAX_BYTES: Final = 9
+#: The credential field is 8 bytes, VERIFIED on hardware (``PROTOCOL.md``).
 PASSWORD_MAX_BYTES: Final = 8
 #: The device stores the UID in two bytes.
 MAX_DEVICE_UID: Final = 0xFFFF

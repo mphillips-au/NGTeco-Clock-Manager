@@ -2,6 +2,21 @@
 
 ## Current phase
 
+PHASE 15 — Capability investigation: **complete**. The first session to write
+to the real NG-MB1. The write path, the PIN offset and fingerprint enumeration
+all graduated from UNVERIFIED to proven; the read-back comparison that had been
+hiding every successful write was fixed; and one write cost the device both of
+its enrolled fingerprints and forty minutes of protocol downtime. The full
+report, evidence map, prioritised roadmap and incident write-up are in
+`phases/PHASE-15.md`.
+
+> **Outstanding physical actions for the operator.** Both fingerprints need
+> re-enrolling at the device, and a leftover `ZZTEST-LONGID` user at UID 901
+> must be deleted from the keypad — it cannot be deleted over the protocol.
+
+> **Merged.** The PHASE 14 QA work reached `main` as PR #11; this phase was
+> rebased onto it, so `main` is linear through PHASE 15.
+
 PHASE 14 (QA) — Production QA: **complete**. The application was exercised
 end to end against the real NG-MB1 for the first time; four defects were found
 and fixed (see the CHANGELOG). Hardening only, no feature added.
@@ -9,8 +24,12 @@ and fixed (see the CHANGELOG). Hardening only, no feature added.
 > **Numbering note.** Three sessions ran in parallel and two independently
 > took the number 14. "PHASE 14 — Windows packaging" below is the
 > `phases/PHASE-13.md` brief; "PHASE 14 (QA)" is the `phases/PHASE-14.md`
-> brief (now `phases/complete/PHASE-14.md`). Both are complete. The numbering
-> is worth straightening out deliberately rather than by whoever edits next.
+> brief (now `phases/complete/PHASE-14.md`). Both are complete.
+>
+> PHASE 15 straightened the rest: the capability investigation is
+> `phases/PHASE-15.md`, and the three planned briefs moved up one —
+> Synology/headless is `PHASE-16.md`, Web/API `PHASE-17.md`, web frontend
+> `PHASE-18.md`. Their content is unchanged.
 
 PHASE 14 — Windows packaging: **complete**. PyInstaller `onedir` builds
 (development console build and release windowed build), an Inno Setup 6
@@ -32,8 +51,13 @@ alongside General, Payroll and Security. One new permission
 
 ## Next phase
 
-Not yet chosen. Candidates: multi-device support, or the headless Synology
-service.
+Not yet chosen. The prioritised roadmap with evidence and effort estimates is
+in `phases/PHASE-15.md`; its top items are the read-only device-settings panel
+built on `CMD_OPTIONS_RRQ` and an Australian payroll export. The planned
+Synology/headless service is `phases/PHASE-16.md`.
+
+Two of them are physical and only the operator can do them: re-enrol both
+fingerprints, and delete `ZZTEST-LONGID` at UID 901 from the device keypad.
 
 ## What exists now
 
@@ -201,15 +225,29 @@ Known device:
 
 - Generic pyzk user parsing is not correct for MB1.
 - Generic pyzk user writing is not approved for MB1 and is never used.
-- The credential region's internal layout is unknown.
-- Biometric / card work is investigation-gated (PHASE 11): `READ_FINGERPRINT`
-  and `READ_FACE` stay UNVERIFIED, `WRITE_USER_CARD` stays UNSUPPORTED and
-  cannot be unlocked, and the adapter exposes no template/enrollment/card
-  operation. The per-capability evidence map (command, payload, response,
-  structure, confidence, reversibility, test status) is in `PROTOCOL.md`.
-  Nothing was implemented because nothing is proven on the project MB1:
-  no hardware was available in the investigation session, so no packet
-  capture was taken and no disposable test user was exercised.
+- The credential region is partly understood (PHASE 15): bytes 3:11 are the
+  PIN as NUL-padded ASCII, proven on hardware. Bytes 11:35 have no known
+  meaning and are always preserved.
+- **The device does not store the bytes it is given.** It sets byte 87 itself
+  and does not zero-fill field tails, so read-back verification compares
+  decoded fields rather than bytes. Byte-exact comparison fails on every write
+  to this device.
+- **Writable field budgets are smaller than the record regions.** User ID 9
+  bytes (`~PIN2Width`), last name 23 bytes. Exceeding the first is what caused
+  the PHASE 15 incident.
+- Fingerprints can be **enumerated** but not read, written or enrolled
+  (PHASE 15). `READ_FINGERPRINT` is SUPPORTED for enumeration only;
+  `READ_FACE` stays UNVERIFIED because no command is known; `WRITE_USER_CARD`
+  stays UNSUPPORTED and cannot be unlocked. The per-capability evidence map
+  (command, payload, response, structure, confidence, reversibility, test
+  status) is in `PROTOCOL.md`.
+- The device exposes a large read-only option surface (`CMD_OPTIONS_RRQ`) and
+  its own operation log (`FCT_OPLOG`, 33 records) that the application does not
+  touch at all. Both are safe reads; see the PHASE 15 roadmap.
+- **The device offers no incremental-sync handle**: every `*Stamp` change
+  counter is refused. Full re-reads remain the only way to reconcile.
+- `IPAddress` read from the device is **stale** (reports 192.168.1.201 while
+  the device answers at 192.168.0.16). Never reconnect or scan from it.
 
 ## Verified on hardware (PHASE 14)
 
@@ -259,19 +297,26 @@ everything biometric or card related. Those stay locked and UNVERIFIED.
   capture all ran against the hardware. The **write path is still unproven** —
   see the next entry. Anything not listed under "Verified on hardware (PHASE
   14)" below remains fixture-proven only.
-- **The write path is UNVERIFIED.** It is built on the verified 120-byte record
-  and is covered by unit tests, but no MB1 has accepted a record from it.
-  `WRITE_USERS` and `DELETE_USERS` are `UNVERIFIED`; unlocking them reports
-  `OPERATOR_ENABLED`, never `SUPPORTED`. Running
-  `tests/integration/test_real_device_writes.py` with
-  `CLOCKMANAGER_TEST_ALLOW_WRITES=1` against a device, with disposable
-  `ZZTEST-` accounts, is what would change that.
-- **The PIN offset inside the credential region is a guess.** Bytes 3:11 are
-  inferred from the generic ZKTeco record layout. Everything outside that field
-  is preserved, but a wrong guess could still leave a test user unable to enter
-  their PIN. Only ever exercise it on a disposable account.
-- The UID assigned to a new user is the lowest free one this application can
-  see. Whether the MB1 accepts an application-chosen UID is unverified.
+- **The write path is PROVEN (PHASE 15).** The real NG-MB1 accepted
+  application-built 120-byte records: create, rename, privilege 0 -> 14 -> 0,
+  PIN set, rename with the PIN preserved, PIN clear and delete were all
+  verified by read-back on disposable `ZZTEST-` accounts. `WRITE_USERS`,
+  `DELETE_USERS` and `WRITE_USER_PASSWORD` are `SUPPORTED`.
+- **Support is not permission.** Writing is still off by default. A device
+  built without `CLOCKMANAGER_ENABLE_DEVICE_WRITES` reports those capabilities
+  as `OPERATOR_LOCKED` — proven, not usable here — and the adapter refuses
+  them. The new `Support.OPERATOR_LOCKED` state exists precisely so that
+  graduating a capability cannot silently switch writing on everywhere.
+- **The PIN offset is proven, not guessed** (PHASE 15): bytes 3:11, NUL-padded
+  ASCII. Setting, preserving and clearing were each verified on hardware.
+- **The MB1 accepts an application-chosen UID** (PHASE 15): a record built with
+  UID 900 was stored, read back and deleted cleanly. The application still uses
+  the lowest free UID by default.
+- **One record on the device cannot be deleted.** `ZZTEST-LONGID` at UID 901,
+  written with an over-long user ID during PHASE 15, survives
+  `CMD_DELETE_USER` (acknowledged, ineffective) across reconnects and a reboot.
+  It has no PIN, fingerprint or face, so it cannot clock in. Removal needs the
+  device keypad.
 - Attendance record size on the project MB1 is **40 bytes**, confirmed on
   hardware (PHASE 14). The parser still resolves the size at runtime from the
   device's record count and still refuses ambiguous payloads, because other
@@ -281,10 +326,18 @@ everything biometric or card related. Those stay locked and UNVERIFIED.
 - The live-capture loop depends on pyzk's name-mangled `_ZK__sock` and
   `_ZK__ack_ok`, and the write path on `_ZK__send_command`. pyzk is pinned to
   `==0.9` because of this.
-- `has_credential_data` reports only that the credential region holds non-zero
-  bytes. That this always means "a PIN is set" is UNVERIFIED.
-- `set_time`, `clear_attendance` and both biometric operations remain
-  unavailable. `clear_attendance` and factory reset do not exist in the adapter
+- `has_credential_data` means "this user has a PIN", proven in both directions
+  on hardware (PHASE 15): all-zero when created without one, non-zero after
+  setting, zero again after clearing.
+- Attendance `status` is still opaque. Values 1 and 15 were observed and match
+  the standard ZKTeco fingerprint/face verification codes on a device with
+  exactly one of each per user, but that is inference: it needs one deliberate
+  punch by each modality to prove. Direction is never inferred from it.
+- Which live-event body size this firmware sends is still undetermined; it
+  needs a real badge. The adapter now logs the observed size so the next punch
+  settles it.
+- `set_time`, `clear_attendance`, face reads and every fingerprint template
+  operation remain unavailable. `clear_attendance` and factory reset do not exist in the adapter
   at all. "Remove device" in the GUI deletes the local record only.
 - **The device communication password is stored unencrypted at rest.** It is
   kept out of logs, `repr` and the GUI, but the data directory's OS permissions

@@ -66,6 +66,46 @@ These are references, not substitutes for real-device verification.
 - Full per-capability evidence map lives in `PROTOCOL.md` under
   "Biometric / card investigation (PHASE 11)". Nothing was implemented.
 
+## PHASE 15 findings (2026-09-05/06, real hardware)
+
+Full report: `phases/PHASE-15.md`. Protocol truth: `PROTOCOL.md`.
+
+What the earlier research got right, wrong and half-right:
+
+- **pyzk issue #240's card claim (4-byte LE at record bytes 83:87)** was
+  previously rejected here because 83:87 falls inside a 59:96 last-name field.
+  With the last name now shown on hardware to be 24 bytes (59:83), that range
+  **is** a distinct region and the claim is consistent with the layout. It is
+  still unproven -- no card was available -- and `WRITE_USER_CARD` stays
+  UNSUPPORTED. The lesson is that a claim can be right for reasons its author
+  could not articulate, and that "it contradicts our layout" is only as strong
+  as the layout.
+- **Issue #240's `get_templates` (bulk fingerprint read) report was correct**
+  for the MB1, not just the sibling MB2: enumeration works, entries are framed
+  `<HHbb`, and UIDs map to the 120-byte records. Sibling-model evidence was a
+  good pointer here.
+- **The NG-MB1 manual's "4-in-1" claim is only half-reachable over TCP.**
+  Fingerprint presence and PINs are readable and writable; faces are counted
+  but have no template API in pyzk 0.9 and no known command; cards have no
+  identified field.
+- **The device is far more talkative than the research suggested.**
+  `CMD_OPTIONS_RRQ` answers ~33 option names, including `~PIN2Width=9` -- a
+  validation limit this project was getting wrong -- and `FCT_OPLOG` returns a
+  33-record device-side operation log. Neither appears in any of the external
+  references.
+- **`read_sizes().cards` should not be trusted.** It is pyzk's guess at an
+  unlabelled field; it did not move when a third user was added, and nothing
+  establishes what it counts.
+- **The device's own `IPAddress` option is stale** (reports 192.168.1.201 while
+  answering at 192.168.0.16). Do not use published examples that reconnect from
+  it.
+
+The expensive finding: a user ID longer than the device's stated `~PIN2Width`
+produced an undeletable record, cost the device both enrolled fingerprint
+templates, and took its protocol service down for forty minutes. None of the
+external references mention a length limit. Trust the device's own reported
+widths over any third-party example.
+
 ## Safety
 
 Do not commit real credentials or raw credential-containing fixtures.

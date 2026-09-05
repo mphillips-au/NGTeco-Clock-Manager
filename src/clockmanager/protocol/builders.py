@@ -17,12 +17,23 @@ exactly that size.
 The credential region
 ---------------------
 
-Bytes 3:35 hold credential data whose internal layout is **not known**. This
-module therefore treats it as opaque: on an update it is copied byte-for-byte
-from the device's own record, so a write that only changes a name cannot
-silently destroy a user's PIN. Setting a credential requires an unverified
-guess at the layout and is gated behind
-:data:`~clockmanager.protocol.capabilities.Capability.WRITE_USER_PASSWORD`.
+Bytes 3:35 hold credential data. PHASE 15 proved on hardware that the first
+8 bytes are the PIN, stored as NUL-padded ASCII digits; the remaining 24 have
+no known meaning. The region is therefore still treated as opaque on any write
+that does not explicitly target the PIN: it is copied byte-for-byte from the
+device's own record, so a write that only changes a name cannot silently
+destroy a user's PIN.
+
+Field budgets
+-------------
+
+The record's regions are larger than what the device keeps. Building pads each
+field out to its full region -- the packet must be exactly 120 bytes -- but the
+*text* is refused above
+:data:`~clockmanager.protocol.constants.USER_LAST_NAME_WRITABLE_BYTES` and
+:data:`~clockmanager.protocol.constants.USER_ID_WRITABLE_BYTES`. Exceeding the
+latter is what wedged the clock in PHASE 15, so the check lives here as well as
+in the domain layer: a caller that builds a record directly cannot skip it.
 
 Credential bytes never leave this layer: :class:`RawUserRecord` exists so the
 adapter can read-modify-write without the credential region reaching the
@@ -44,9 +55,11 @@ from clockmanager.protocol.constants import (
     USER_FIRST_NAME_SLICE,
     USER_ID_SIZE,
     USER_ID_SLICE,
+    USER_ID_WRITABLE_BYTES,
     USER_LAST_NAME_SIZE,
     USER_LAST_NAME_SLICE,
-    USER_PASSWORD_CANDIDATE_SLICE,
+    USER_LAST_NAME_WRITABLE_BYTES,
+    USER_PASSWORD_SLICE,
     USER_PRIVILEGE_OFFSET,
     USER_UID_SLICE,
     WRITABLE_PRIVILEGES,
@@ -140,8 +153,8 @@ def _build_credential_region(
     # UNVERIFIED layout. Everything outside the candidate password field keeps
     # whatever the device had, so a wrong guess damages as little as possible.
     region = bytearray(existing if existing is not None else bytes(USER_CREDENTIAL_SIZE))
-    field_start = USER_PASSWORD_CANDIDATE_SLICE.start - USER_CREDENTIAL_SLICE.start
-    field_size = USER_PASSWORD_CANDIDATE_SLICE.stop - USER_PASSWORD_CANDIDATE_SLICE.start
+    field_start = USER_PASSWORD_SLICE.start - USER_CREDENTIAL_SLICE.start
+    field_size = USER_PASSWORD_SLICE.stop - USER_PASSWORD_SLICE.start
     encoded = encode_fixed_text(password, field_size, what="PIN or password", encoding=encoding)
     region[field_start : field_start + field_size] = encoded
     return bytes(region)
@@ -180,6 +193,18 @@ def build_user_record(
         )
     if not user_id.strip():
         raise DeviceValidationError("User ID must not be empty.")
+    if len(user_id.encode(encoding, errors="strict")) > USER_ID_WRITABLE_BYTES:
+        raise DeviceValidationError(
+            f"User ID must fit in {USER_ID_WRITABLE_BYTES} bytes. The device reports "
+            "~PIN2Width=9, and a longer ID has been observed to leave a record that "
+            "cannot be deleted and to stop the device answering the protocol "
+            "(PROTOCOL.md, 'The UID 901 incident')."
+        )
+    if len(last_name.encode(encoding, errors="strict")) > USER_LAST_NAME_WRITABLE_BYTES:
+        raise DeviceValidationError(
+            f"Last name must fit in {USER_LAST_NAME_WRITABLE_BYTES} bytes. The device "
+            "truncates anything longer and overwrites bytes it owns."
+        )
 
     record = (
         pack("<H", uid)

@@ -41,7 +41,13 @@ from zk import ZK
 from zk.exception import ZKErrorConnection, ZKErrorResponse, ZKNetworkError
 
 from clockmanager.diagnostics.logging_setup import get_logger
-from clockmanager.domain.models import AttendanceEvent, DeviceIdentity, DeviceInfo, DeviceUser
+from clockmanager.domain.models import (
+    AttendanceEvent,
+    DeviceIdentity,
+    DeviceInfo,
+    DeviceUser,
+    FingerprintSlot,
+)
 from clockmanager.domain.users import (
     UserDraft,
     UserWriteOutcome,
@@ -54,17 +60,20 @@ from clockmanager.protocol.builders import (
 )
 from clockmanager.protocol.capabilities import (
     NG_MB1_CAPABILITIES,
+    WRITE_CAPABILITIES,
     Capability,
     DeviceCapabilities,
 )
 from clockmanager.protocol.constants import (
     CMD_ATTLOG_RRQ,
+    CMD_DB_RRQ,
     CMD_DELETE_USER,
     CMD_REFRESHDATA,
     CMD_REG_EVENT,
     CMD_USER_WRQ,
     CMD_USERTEMP_RRQ,
     EF_ATTLOG,
+    FCT_FINGERTMP,
     FCT_USER,
     LIVE_EVENT_BUFFER_BYTES,
     MAX_USER_UID,
@@ -83,6 +92,7 @@ from clockmanager.protocol.errors import (
 from clockmanager.protocol.interface import DeviceConnectionSettings
 from clockmanager.protocol.records import (
     parse_attendance_payload,
+    parse_fingerprint_payload,
     parse_live_event,
     parse_user_payload,
     parse_user_record,
@@ -101,8 +111,16 @@ MODEL_NAME = "NG-MB1"
 #: Why an operator-unlocked capability is usable. Recorded on the capability
 #: itself so it travels into diagnostics and the GUI.
 _WRITE_UNLOCK_REASON = (
-    "Deliberately enabled by an operator to verify the 120-byte write path on "
-    "real hardware. Use disposable test users only."
+    "Deliberately enabled by an operator for this installation. The 120-byte "
+    "write path is proven on real hardware (PHASE 15); enabling it is still a "
+    "decision, because a write changes who can enter the building."
+)
+
+#: Why a proven write capability is nonetheless refused. Every device is built
+#: with writing locked; an installation opts in.
+_WRITE_LOCK_REASON = (
+    "This installation has not enabled device writing "
+    "(CLOCKMANAGER_ENABLE_DEVICE_WRITES / CLOCKMANAGER_ENABLE_CREDENTIAL_WRITES)."
 )
 
 
@@ -361,6 +379,33 @@ class NGTecoMB1Device:
         )
         return events
 
+    def read_fingerprint_slots(self) -> list[FingerprintSlot]:
+        """Enumerate enrolled fingerprints without reading any template.
+
+        Verified on the project NG-MB1 (PHASE 15): a buffered
+        ``CMD_DB_RRQ``/``FCT_FINGERTMP`` read returned one entry per enrolled
+        finger, each carrying the user's device UID, the finger index and the
+        template length, and the UIDs matched the 120-byte user records exactly.
+
+        Template contents are discarded inside
+        :func:`~clockmanager.protocol.records.parse_fingerprint_payload` and
+        never reach this method's return value, a log or an export
+        (``SECURITY.md``). This is a read; it enrols nothing and deletes
+        nothing, and no fingerprint write operation exists in this adapter.
+        """
+        self.capabilities.require(Capability.READ_FINGERPRINT)
+
+        def _read(transport: Any) -> list[FingerprintSlot]:
+            payload, _size = transport.read_with_buffer(CMD_DB_RRQ, FCT_FINGERTMP)
+            return parse_fingerprint_payload(payload)
+
+        slots: list[FingerprintSlot] = self._call(_read, description="Reading fingerprint slots")
+        _logger.info(
+            "Enumerated fingerprint slots",
+            extra={"device": self._settings.name, "slot_count": len(slots)},
+        )
+        return slots
+
     # -- writes ---------------------------------------------------------------
 
     def read_raw_user_records(self) -> list[RawUserRecord]:
@@ -593,10 +638,30 @@ class NGTecoMB1Device:
     def _compare_records(self, *, sent: bytes, stored: bytes, uid: int) -> None:
         """Confirm the device stored what was sent.
 
-        Every byte outside the credential region must match exactly. The
-        credential region is compared only on whether a credential is present:
-        a device is free to store a PIN in a transformed form, so comparing
-        those bytes would fail spuriously and would mean handling the secret.
+        This compares the record's **meaning**, not its bytes. A byte-exact
+        comparison is wrong for this device, and PHASE 15 proved it on hardware:
+        every write succeeded and every write then failed verification, because
+        the MB1 does not store the 120 bytes it is given verbatim.
+
+        Two device behaviours make byte equality unreachable:
+
+        * The device writes its own value into bytes it owns
+          (:data:`USER_DEVICE_FLAG_OFFSETS`). Byte 87 comes back ``0x01`` on
+          every stored record no matter what was sent.
+        * The device does not zero-fill a field's tail. Bytes after a field's
+          NUL terminator keep whatever the slot held before, so a record whose
+          slot previously held a longer name reads back with that name's
+          remainder still in it. Both enrolled users on the project device
+          carry such residue.
+
+        Comparing the decoded fields is therefore both correct and stronger for
+        the operator: it asserts the thing that was actually promised -- this
+        user now has this ID, name and privilege -- rather than an incidental
+        property of the buffer.
+
+        The credential region is still compared on presence only. A device is
+        free to store a PIN in a transformed form, so comparing those bytes
+        would risk a spurious failure and would mean handling the secret.
         """
         if len(stored) != MB1_USER_RECORD_SIZE:  # pragma: no cover - guarded upstream
             raise DeviceVerificationError(
@@ -604,14 +669,26 @@ class NGTecoMB1Device:
                 f"{MB1_USER_RECORD_SIZE}."
             )
 
-        def _without_credential(record: bytes) -> bytes:
-            return record[: USER_CREDENTIAL_SLICE.start] + record[USER_CREDENTIAL_SLICE.stop :]
+        expected = parse_user_record(sent, encoding=self._settings.encoding)
+        actual = parse_user_record(stored, encoding=self._settings.encoding)
 
-        if _without_credential(sent) != _without_credential(stored):
+        mismatches = [
+            f"{label}: sent {before!r}, device stored {after!r}"
+            for label, before, after in (
+                ("device UID", expected.device_uid, actual.device_uid),
+                ("user ID", expected.user_id, actual.user_id),
+                ("first name", expected.first_name, actual.first_name),
+                ("last name", expected.last_name, actual.last_name),
+                ("privilege", expected.privilege, actual.privilege),
+            )
+            if before != after
+        ]
+        if mismatches:
             raise DeviceVerificationError(
-                f"The record stored for UID {uid} does not match what was sent. The "
-                "write was acknowledged but not applied as requested; re-read the "
-                "device before making further changes."
+                f"The record stored for UID {uid} does not match what was sent "
+                f"({'; '.join(mismatches)}). The write was acknowledged but not "
+                "applied as requested; re-read the device before making further "
+                "changes."
             )
 
         if any(sent[USER_CREDENTIAL_SLICE]) != any(stored[USER_CREDENTIAL_SLICE]):
@@ -695,6 +772,19 @@ class NGTecoMB1Device:
                     extra={"device": self._settings.name, "remaining_bytes": len(body)},
                 )
                 return
+            # Which of the four live-event layouts this firmware sends is still
+            # undetermined (PROTOCOL.md, PHASE 15): settling it needs a real
+            # badge, which no amount of reading can produce. Recording the size
+            # here means the next punch anyone captures answers it, at no cost
+            # and with no extra tooling.
+            _logger.info(
+                "Live event body size observed",
+                extra={
+                    "device": self._settings.name,
+                    "live_body_bytes": chunk_size,
+                    "datagram_bytes": len(datagram),
+                },
+            )
             yield parse_live_event(body[:chunk_size], encoding=self._settings.encoding)
             body = body[chunk_size:]
 
@@ -723,19 +813,29 @@ def _first_free_uid(taken: set[int]) -> int:
 def _resolve_capabilities(
     *, allow_writes: bool, allow_credential_writes: bool
 ) -> DeviceCapabilities:
-    """Apply operator write unlocks to the documented MB1 capability set."""
+    """Apply this installation's write policy to the MB1 capability set.
+
+    The capability set records what the *device* can do. This applies what the
+    *installation* permits, which is a separate question: PHASE 15 proved the
+    write path on hardware, and proving it must not be the same act as turning
+    it on everywhere. Anything not explicitly unlocked here is reported as
+    :data:`Support.OPERATOR_LOCKED` -- supported by the device, withheld here.
+    """
+    if allow_credential_writes and not allow_writes:
+        raise DeviceValidationError(
+            "Credential writing cannot be unlocked while user writing is locked."
+        )
     unlocked: list[Capability] = []
     if allow_writes:
         unlocked.extend((Capability.WRITE_USERS, Capability.DELETE_USERS))
     if allow_credential_writes:
-        if not allow_writes:
-            raise DeviceValidationError(
-                "Credential writing cannot be unlocked while user writing is locked."
-            )
         unlocked.append(Capability.WRITE_USER_PASSWORD)
+
+    still_locked = [c for c in WRITE_CAPABILITIES if c not in unlocked]
+    capabilities = NG_MB1_CAPABILITIES.locked(still_locked, reason=_WRITE_LOCK_REASON)
     if not unlocked:
-        return NG_MB1_CAPABILITIES
-    return NG_MB1_CAPABILITIES.unlocked(unlocked, reason=_WRITE_UNLOCK_REASON)
+        return capabilities
+    return capabilities.unlocked(unlocked, reason=_WRITE_UNLOCK_REASON)
 
 
 def _as_text(value: Any) -> str:

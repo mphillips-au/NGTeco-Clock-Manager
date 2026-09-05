@@ -103,8 +103,8 @@ class TestValidation:
         ("field", "value"),
         [
             ("first_name", "A" * 25),
-            ("last_name", "B" * 38),
-            ("user_id", "C" * 25),
+            ("last_name", "B" * 24),
+            ("user_id", "C" * 10),
         ],
     )
     def test_refuses_a_value_that_does_not_fit_rather_than_truncating(
@@ -117,7 +117,7 @@ class TestValidation:
             "privilege": EMPLOYEE_PRIVILEGE,
             field: value,
         }
-        with pytest.raises(DeviceValidationError, match="does not fit"):
+        with pytest.raises(DeviceValidationError, match="fit"):
             build_user_record(**kwargs)  # type: ignore[arg-type]
 
     def test_refuses_an_embedded_nul(self) -> None:

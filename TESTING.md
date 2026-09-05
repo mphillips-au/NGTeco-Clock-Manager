@@ -55,6 +55,24 @@ Write tests need a **second** switch beyond the device address
 carries the `ZZTEST-` prefix and is removed afterwards; nothing without that
 prefix is ever modified or deleted.
 
+### Never send malformed input to a real device
+
+Field-length, encoding and privilege refusals belong in unit tests against the
+builder and the domain draft, where they are free. PHASE 15 sent one over-long
+user ID to the project clock and it cost both enrolled fingerprints, an
+undeletable record and a forty-minute outage
+(`phases/PHASE-15.md`). A real-device suite exercises **valid** operations
+only.
+
+Corollaries for any real-device test:
+
+- Stay inside every device-reported width (`~PIN2Width` for the user ID).
+- Assume nobody can power-cycle the clock: there is no remote reset once the
+  protocol service stops answering.
+- Snapshot before writing, and compare afterwards. PHASE 15's snapshot -- whole
+  record outside the credential region, SHA-256 over the credential region -- is
+  enough to prove byte-identity without storing a secret.
+
 ## GUI
 
 Use smoke tests and service-layer tests.

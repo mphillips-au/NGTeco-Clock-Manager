@@ -75,10 +75,19 @@ Known:
 Known layout:
 - bytes 0:2 = UID, little-endian uint16
 - byte 2 = privilege
-- bytes 3:35 = credential/PIN region
-- bytes 35:59 = first name
-- bytes 59:96 = last name
-- bytes 96:120 = user ID
+- bytes 3:11 = PIN, NUL-padded ASCII (PROVEN, PHASE 15)
+- bytes 11:35 = rest of the credential region, unknown, always preserved
+- bytes 35:59 = first name (24 bytes)
+- bytes 59:96 = last-name region; only **23 bytes** are writable (PHASE 15)
+- byte 87 = device-owned flag, always 0x01 (PHASE 15)
+- bytes 96:120 = user-ID region; only **9 bytes** are writable (`~PIN2Width`)
+
+Writing beyond a writable budget reaches bytes the device owns. See
+`PROTOCOL.md` and `phases/PHASE-15.md`.
+
+The device does **not** store the 120 bytes it is given: it sets byte 87 itself
+and does not zero-fill field tails, so read-back verification compares decoded
+fields, never bytes.
 
 Known privilege values from the real device:
 - 0 = Employee
@@ -128,6 +137,47 @@ Never:
 - send an unverified user packet to an MB1
 
 Use disposable test users for write testing.
+
+### Test-target authorisation (project NG-MB1, recorded PHASE 15)
+
+The operator has given a standing, **narrow** exception to "modify production
+users as part of a test", for the project clock (serial NBF6260700048) only:
+
+- **UID 1 (Dean Gianginis) is off-limits.** Read only. Never write to it, never
+  delete it, never touch its credential region.
+- **UID 2 (Erin Stilo) may be modified**, but she is a real employee. Snapshot
+  the whole 120-byte record first, prefer reversible changes, verify by
+  read-back, and restore the original state before finishing. Deleting her may
+  destroy her biometric enrolment; do not delete her.
+- **Anything destructive or credential-related belongs on a throwaway
+  `ZZTEST-` account** you create and delete: PIN set/clear, delete-and-verify,
+  privilege changes, malformed input.
+
+PHASE 15 used this authorisation and did **not** need to write to UID 2: every
+question was settled on disposable accounts. Both real records were confirmed
+byte-identical to their pre-write snapshots afterwards. Prefer that outcome.
+
+Note that both enrolled users are privilege 14 (Admin), so UID 1 is not the
+only administrator on the device.
+
+### Hard-won limits for device writes
+
+Learned the expensive way in PHASE 15 (`phases/PHASE-15.md`, "The incident"):
+
+- **Never exceed a device-reported field width.** A 13-character user ID
+  against `~PIN2Width=9` produced a record that could not be deleted, and the
+  device lost both enrolled fingerprints and stopped answering the protocol for
+  forty minutes. User IDs are bounded to 9 bytes and last names to 23; the
+  builder enforces both.
+- **Do not test malformed input against real hardware.** Malformed-input
+  refusal is an application concern and belongs in unit tests. There is no
+  version of "what does the device do with a bad packet?" that is worth the
+  answer on a clock somebody depends on.
+- **A device that accepts TCP is not a healthy device.** Port 4370 stayed open
+  throughout the outage.
+- **There is no remote reset when the protocol service is down.**
+  `ZK.restart()` needs a working session. Plan writes on the assumption that
+  nobody can power-cycle the clock.
 
 ## Protocol discipline
 

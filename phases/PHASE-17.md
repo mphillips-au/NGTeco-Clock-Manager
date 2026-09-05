@@ -1,7 +1,7 @@
-# PHASE 17 — Web Frontend
+# PHASE 17 — Web/API
 
 ## Goal
-Build the future browser interface over the API.
+Build the future web/API boundary over the headless core.
 
 ## Read
 - AGENTS.md
@@ -12,16 +12,18 @@ Build the future browser interface over the API.
 - SECURITY.md
 - TESTING.md
 
-Build modern responsive pages for:
-- dashboard
-- live attendance
+Build an API (FastAPI unless architecture requires otherwise) for:
+- auth
+- roles
+- devices
 - employees
 - users
 - attendance
+- live state
 - timesheets
 - reports
-- device status
-- settings
 - audit
+- sync
 
-Do not put device protocol logic in the browser.
+The browser must NEVER talk directly to TCP 4370.
+Do not duplicate protocol logic.

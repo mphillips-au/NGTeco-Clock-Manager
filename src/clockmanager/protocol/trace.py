@@ -22,6 +22,7 @@ from clockmanager.diagnostics.logging_setup import get_logger
 from clockmanager.domain.models import describe_privilege
 from clockmanager.protocol.constants import (
     CMD_ATTLOG_RRQ,
+    CMD_DB_RRQ,
     CMD_USERTEMP_RRQ,
     FCT_USER,
     MB1_USER_RECORD_SIZE,
@@ -187,7 +188,20 @@ def redact_payload_preview(payload: bytes, *, command: int | None = None) -> str
     used to be masked as one user record -- silently blanking a real punch's
     user ID, status, timestamp and direction in the trace an engineer is
     reading to diagnose exactly that.
+
+    ``CMD_DB_RRQ`` is withheld whole. It is the table read, and one of the
+    tables it can return is the fingerprint store: its entries are mostly
+    biometric template bytes, which must never be logged, exported or
+    persisted (``SECURITY.md``). The function selector that would say which
+    table it was is not part of the payload, so there is nothing to narrow the
+    rule with -- and a size is all a diagnostic needs from it anyway.
     """
+    if command == CMD_DB_RRQ:
+        return (
+            f"<{len(payload)} byte(s) withheld: a table read may carry biometric "
+            "templates, which are never previewed>"
+        )
+
     is_user_data = command == CMD_USERTEMP_RRQ or (
         command is None and _looks_like_user_payload(payload)
     )

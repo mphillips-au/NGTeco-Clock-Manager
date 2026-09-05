@@ -35,6 +35,7 @@ from clockmanager.diagnostics.logging_setup import get_logger
 from clockmanager.domain.auth import Permission, Role, require
 from clockmanager.errors import ClockManagerError
 from clockmanager.persistence.models import SCHEMA_VERSION, utc_now
+from clockmanager.protocol.capabilities import Capability
 from clockmanager.protocol.errors import DeviceError
 from clockmanager.protocol.trace import (
     AttendanceSnapshot,
@@ -349,6 +350,14 @@ class DiagnosticsService:
                 except (DeviceError, ValueError) as exc:
                     recorder.record("session", "LOCAL", "Attendance failed", detail=str(exc))
 
+            with recorder.timed("session", "RX", "Fingerprint slots"):
+                recorder.record(
+                    "session",
+                    "LOCAL",
+                    "Fingerprint slots",
+                    detail=_describe_fingerprint_slots(device),
+                )
+
             if live_seconds > 0:
                 live = self._listen(device, recorder, live_seconds)
             else:
@@ -564,3 +573,31 @@ class DiagnosticsService:
         )
         _logger.info("Exported diagnostics", extra={"device": trace.profile_name})
         return payload, filename, "application/json"
+
+
+def _describe_fingerprint_slots(device: Any) -> str:
+    """Summarise the fingerprint store for a trace, disclosing no template.
+
+    Enumeration is proven on the real NG-MB1 (``PROTOCOL.md``, PHASE 15) and is
+    a read like any other in this trace. Only the per-slot metadata reaches the
+    detail string -- which user, which finger, how many bytes long -- because
+    the template contents are biometric data and ``SECURITY.md`` forbids
+    logging, exporting or persisting them. A device that does not answer is
+    reported, not raised: a trace step must never take the whole trace down.
+    """
+    read_slots = getattr(device, "read_fingerprint_slots", None)
+    if read_slots is None:
+        return "Not available on this device implementation."
+    if not device.capabilities.supports(Capability.READ_FINGERPRINT):
+        return "Fingerprint enumeration is not available on this device."
+    try:
+        slots = read_slots()
+    except (DeviceError, ValueError) as exc:
+        return f"Could not enumerate: {exc}"
+    if not slots:
+        return "No fingerprints enrolled."
+    return f"{len(slots)} enrolled: " + "; ".join(
+        f"UID {slot.device_uid} finger {slot.finger_index} "
+        f"({'valid' if slot.is_valid else 'invalid'}, {slot.template_bytes} template bytes)"
+        for slot in slots
+    )

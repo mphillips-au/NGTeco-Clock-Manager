@@ -17,9 +17,10 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from struct import unpack
 
-from clockmanager.domain.models import AttendanceEvent, DeviceUser
+from clockmanager.domain.models import AttendanceEvent, DeviceUser, FingerprintSlot
 from clockmanager.protocol.constants import (
     ATTENDANCE_RECORD_SIZES,
+    FINGERPRINT_ENTRY_HEADER_SIZE,
     MAX_DEVICE_YEAR,
     MB1_USER_RECORD_SIZE,
     MIN_DEVICE_YEAR,
@@ -38,6 +39,7 @@ __all__ = [
     "decode_zk_time",
     "decode_zk_timehex",
     "parse_attendance_payload",
+    "parse_fingerprint_payload",
     "parse_live_event",
     "parse_user_payload",
     "parse_user_record",
@@ -358,3 +360,65 @@ def parse_live_event(data: bytes, *, encoding: str = DEFAULT_ENCODING) -> Attend
         punch=int(punch),
         status=int(status),
     )
+
+
+# -- fingerprints -------------------------------------------------------------
+
+
+def parse_fingerprint_payload(payload: bytes) -> list[FingerprintSlot]:
+    """Enumerate the fingerprint store without disclosing any template.
+
+    Verified on the project NG-MB1 (PHASE 15). The buffered read of
+    ``CMD_DB_RRQ``/``FCT_FINGERTMP`` returns a 4-byte total size followed by
+    variable-length entries, each framed::
+
+        0:2  total entry size, little-endian uint16 (header + template)
+        2:4  user UID, little-endian uint16
+        4    finger index, signed byte
+        5    valid flag, signed byte
+        6:   template bytes
+
+    The template bytes are deliberately **skipped, not returned**. This
+    function is the boundary that keeps biometric data out of the rest of the
+    application (``SECURITY.md``): the only thing it reports about a template
+    is how long it was.
+    """
+    if not payload:
+        return []
+
+    declared_size, body = split_size_prefixed_payload(payload, what="Fingerprint data")
+    if 0 < declared_size <= len(body):
+        body = body[:declared_size]
+
+    slots: list[FingerprintSlot] = []
+    offset = 0
+    while offset + FINGERPRINT_ENTRY_HEADER_SIZE <= len(body):
+        entry_size, uid, finger_index, valid = unpack(
+            "<HHbb", body[offset : offset + FINGERPRINT_ENTRY_HEADER_SIZE]
+        )
+        if entry_size < FINGERPRINT_ENTRY_HEADER_SIZE:
+            raise DeviceParseError(
+                f"Fingerprint entry at offset {offset} declares {entry_size} bytes, "
+                f"which is smaller than its {FINGERPRINT_ENTRY_HEADER_SIZE}-byte header."
+            )
+        if offset + entry_size > len(body):
+            raise DeviceParseError(
+                f"Fingerprint entry at offset {offset} declares {entry_size} bytes but "
+                f"only {len(body) - offset} remain. Refusing to parse a truncated store."
+            )
+        slots.append(
+            FingerprintSlot(
+                device_uid=int(uid),
+                finger_index=int(finger_index),
+                valid=int(valid),
+                template_bytes=entry_size - FINGERPRINT_ENTRY_HEADER_SIZE,
+            )
+        )
+        offset += entry_size
+
+    if offset != len(body):
+        raise DeviceParseError(
+            f"Fingerprint data has {len(body) - offset} trailing byte(s) after the last "
+            "entry. Refusing to guess at an unrecognised layout."
+        )
+    return slots

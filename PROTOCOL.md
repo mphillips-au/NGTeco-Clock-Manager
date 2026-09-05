@@ -27,12 +27,25 @@ The MB1 user data response contains:
 - 120 bytes per user
 
 Record layout currently verified:
-- 0:2 UID uint16 LE
-- 2 privilege byte
-- 3:35 credential/PIN region
-- 35:59 first name
-- 59:96 last name
-- 96:120 user ID
+
+```text
+  0:2    UID, little-endian uint16
+  2      privilege byte
+  3:11   PIN, NUL-padded ASCII                     (PHASE 15)
+ 11:35   remainder of the credential region, unknown, always preserved
+ 35:59   first name (24 bytes)
+ 59:83   last name  (24 bytes usable)              (PHASE 15)
+ 83:87   unknown, zero on every record observed
+ 87      device-owned flag, always 0x01            (PHASE 15)
+ 88:90   unknown, zero
+ 90      0x01 on biometrically-enrolled users only, UNVERIFIED
+ 91:96   unknown, zero
+ 96:120  user ID (24-byte field, 9 bytes usable)   (PHASE 15)
+```
+
+Parsing reads 35:59, 59:96 and 96:120 and splits each on its NUL terminator,
+which stays correct. What PHASE 15 changed is the **writable** budget: see
+"Field budgets" below.
 
 Known privilege:
 - 0 Employee
@@ -55,6 +68,14 @@ Both confirmed on the real device in PHASE 14, including a live badge that
 arrived as punch 1 (OUT).
 
 Status is independent raw metadata.
+
+Six records read in PHASE 15 across two users carried `status` 1 (three times)
+and 15 (three times). Those are the standard ZKTeco verification-method codes
+for fingerprint and face, and this device had exactly one fingerprint and one
+face enrolled per user, so "`status` is the verification method" is a strong
+inference -- but it is **not proven**, and `status` stays opaque until someone
+badges once by finger and once by face and the log is read. Direction is never
+inferred from it.
 
 ## pyzk integration boundary (PHASE 01)
 
@@ -212,37 +233,127 @@ secret.
 Writes are never retried. A retry could apply the same change twice, and a
 write whose outcome is unknown must be investigated rather than repeated.
 
-### Status: UNVERIFIED
+### Status: PROVEN (PHASE 15)
 
-No NG-MB1 has yet accepted a record from this path. `Capability.WRITE_USERS`
-and `Capability.DELETE_USERS` are `UNVERIFIED` and unusable until an operator
-unlocks them, at which point they report `OPERATOR_ENABLED`, never `SUPPORTED`.
-`tests/integration/test_real_device_writes.py` is the suite that would change
-that.
+The real NG-MB1 (serial NBF6260700048) accepted application-built 120-byte
+records and applied them. Verified on hardware, on disposable `ZZTEST-`
+accounts: create, rename, privilege 0 -> 14 -> 0, PIN set, rename with the PIN
+preserved, PIN clear, and delete -- every step confirmed by the adapter's own
+read-back.
+
+`WRITE_USERS`, `DELETE_USERS` and `WRITE_USER_PASSWORD` are `SUPPORTED`.
+
+**Support is not permission.** Every device is still built with writing locked:
+an installation that has not set `CLOCKMANAGER_ENABLE_DEVICE_WRITES` reports
+those capabilities as `OPERATOR_LOCKED` -- proven, not usable here -- and the
+adapter refuses them. Proving a write works on hardware must not be the same act
+as turning it on everywhere.
+
+### Read-back verification compares meaning, not bytes
+
+**The MB1 does not store the 120 bytes it is given.** Byte-exact comparison
+outside the credential region fails on *every* write to this device, which is
+why the write path appeared broken for three phases while actually working.
+
+Two behaviours:
+
+1. **The device owns byte 87.** It reads back `0x01` on every stored record
+   whatever was sent.
+2. **The device does not zero-fill field tails.** Bytes after a field's NUL keep
+   whatever the slot previously held. A record written into a slot that had held
+   "Dean" read back with `n` still at offset 38, and the live UID 2 record
+   carries `nis` at 65:68 -- the tail of "Gianginis" from UID 1:
+   `53 74 69 6c 6f 00 6e 69 73`.
+
+Verification therefore compares the decoded fields -- UID, user ID, first name,
+last name, privilege -- plus credential presence. Residue and device-owned flags
+are ignored; a field the device actually stored differently still fails.
+
+### Field budgets (PHASE 15)
+
+The record's regions are larger than what the device keeps:
+
+- **User ID: 9 bytes.** The device reports `~PIN2Width=9`. See "The UID 901
+  incident".
+- **Last name: 23 bytes.** A 30-character last name came back truncated to 23,
+  with the 24th byte zeroed by the device and byte 88 overwritten.
+- First name: 24 bytes, unchanged.
+
+Both are enforced in `build_user_record` as well as `UserDraft.validate`, so a
+caller that builds a record directly cannot skip the check.
+
+### Application-chosen UID: accepted
+
+A record built with UID 900 -- above the device's 200-user capacity -- was
+stored, read back as UID 900 and deleted cleanly. The device does not insist on
+assigning UIDs itself. The application still uses the lowest free UID by
+default.
+
+### The UID 901 incident
+
+A user record written with a **13-character user ID**, against the device's
+stated `~PIN2Width=9`, was accepted and read back intact. Afterwards:
+
+- `CMD_DELETE_USER` on that UID was acknowledged and did nothing, repeatedly,
+  across reconnects and a reboot. The record is still on the device.
+- The fingerprint store went from 2 templates to 0. Faces, PINs, user records
+  and attendance were all unaffected.
+- A further write to that UID timed out and the device stopped completing ZK
+  sessions for about forty minutes while still accepting TCP on 4370. It
+  recovered on its own and was then rebooted with `CMD_RESTART`.
+
+**Attribution is not established.** Two well-formed deletes happened between the
+long-ID write and the first observation of `fingers=0`, so a delete cannot be
+excluded as the mechanism. The long user ID is the only out-of-spec operation in
+the sequence and the only record that became unmanageable.
+
+Consequences: user IDs are bounded to 9 bytes; `ZK.restart()` needs a working
+session and so is no help when the service itself has failed; Dropbear on TCP
+3718 is the only out-of-band route and needs credentials nobody has.
 
 ## Credentials
 
-The user record contains a credential/PIN region at bytes 3:35 (32 bytes). Do
-not expose its contents in normal tooling.
+The user record contains a credential region at bytes 3:35 (32 bytes). Do not
+expose its contents in normal tooling.
 
-**Its internal layout is unknown.** The application treats it as opaque:
+**The PIN field is PROVEN (PHASE 15): bytes 3:11, NUL-padded ASCII digits.**
+Setting `"1234"` on a disposable user stored exactly `31 32 33 34 00 00 00 00`
+at 3:11, with the remaining 24 bytes of the region zero; clearing zeroed the
+whole region; a name-only update preserved it.
 
-- an update copies the existing 32 bytes byte-for-byte, so changing a name
-  cannot destroy a user's PIN
-- clearing zeroes the whole region
-- setting a PIN writes into bytes 3:11 only, a candidate offset inferred from
-  the generic ZKTeco record whose 8-byte password field follows the privilege
-  byte. Everything outside that field is preserved, so a wrong guess damages as
-  little as possible.
+`has_credential_data` therefore does mean "this user has a PIN", proven in both
+directions on hardware: a user created without one read back all-zero, non-zero
+after setting, zero again after clearing.
+
+Bytes 11:35 have no observed meaning and are always preserved byte-for-byte from
+the device's own record, so a write that does not target the PIN cannot disturb
+whatever they hold.
 
 Setting or clearing a credential is gated behind
-`Capability.WRITE_USER_PASSWORD`, which is UNVERIFIED and requires its own
-operator unlock.
+`Capability.WRITE_USER_PASSWORD` -- now SUPPORTED, and still requiring its own
+`CLOCKMANAGER_ENABLE_CREDENTIAL_WRITES` unlock.
 
 ## Cards
 
 No card field has been identified in the 120-byte record.
 `Capability.WRITE_USER_CARD` is UNSUPPORTED and cannot be unlocked.
+
+**PHASE 15 changed the standing of the issue #240 claim without proving it.**
+That claim puts a 4-byte little-endian card at bytes 83:87. It was previously
+rejected because 83:87 falls inside a 59:96 last-name field. Now that the last
+name is shown to be 24 bytes (59:83), **83:87 is a distinct four-byte region**
+and the claim is consistent with the layout rather than contradicting it.
+
+It is still not evidence. All four records observed hold zero at 83:87, and no
+card was available to enrol. `read_sizes()` reports `cards=2`, but that is
+pyzk's guess at an unlabelled `fields[12]` and it did **not** change when a
+third user was added, so it does not track users and nothing establishes what it
+does count. Every card-related option name (`CardFunOn`, `RFCardOn`,
+`~MaxCardCount`) is refused by the device.
+
+The proving test is unchanged: enrol a card on a disposable user via the keypad,
+dump the 120-byte record before and after, and diff. Implement nothing until the
+offset survives that.
 
 ## Biometrics
 
@@ -348,6 +459,127 @@ corrupt names or credentials. Test status: NOT RUN. `WRITE_USER_CARD`
 stays UNSUPPORTED. The proving test, when hardware is available: enroll a
 card on a disposable user via the device keypad, dump the 120-byte record
 before/after, and diff — implement nothing until the offset survives that.
+
+## Fingerprint enumeration (PHASE 15, PROVEN)
+
+The fingerprint store can be **enumerated** on the real NG-MB1. Reading,
+writing or enrolling a template still cannot.
+
+- Command: `CMD_DB_RRQ` (7), buffered read, function selector `FCT_FINGERTMP`
+  (2).
+- Response: 4-byte little-endian total size, then variable-length entries.
+- Entry framing: `<HHbb` = total entry size, user UID, finger index, valid
+  flag, followed by `size - 6` template bytes.
+
+Observed: 1682 bytes, two entries -- UID 1 finger 6 valid 1 (838 template
+bytes) and UID 2 finger 6 valid 1 (828 bytes). **The UIDs matched the 120-byte
+user records exactly**, which is the mapping question the whole feature depends
+on; having two enrolled users is what made it answerable.
+
+`parse_fingerprint_payload` discards the template bytes at the parser boundary
+and returns `FingerprintSlot(device_uid, finger_index, valid, template_bytes)`
+-- four integers. Template contents never reach a caller, a log, an export or
+the database (`SECURITY.md`).
+
+**`CMD_DB_RRQ` payloads are withheld whole from protocol traces.** The table
+read can return the fingerprint store, whose entries are mostly template bytes,
+and the function selector that would say which table it was is not part of the
+payload. A trace reports the size and nothing else. Over-redacting a diagnostic
+is safe; under-redacting discloses a biometric.
+
+`Capability.READ_FINGERPRINT` is SUPPORTED **for enumeration only**, and it is
+a read: it needs no write unlock.
+
+## Device options (PHASE 15, PROVEN, read-only)
+
+`CMD_OPTIONS_RRQ` (11) with a NUL-terminated option name returns `Name=Value`.
+An unsupported name returns code 4999 harmlessly. The application uses none of
+this today.
+
+Confirmed answering on this device: `~SerialNumber`, `~DeviceName`,
+`~Platform`, `~ProductTime` (2026-01-31 12:18:57), `~OS`, `~PIN2Width` (9),
+`~ZKFPVersion` (10), `ZKFaceVersion` (35), `FaceFunOn` (1), `FingerFunOn` (1),
+`~UserExtFmt` (1), `CompatOldFirmware` (0), `~IsOnlyRFMachine` (0),
+`~MaxUserPhotoCount` (200), `IPAddress`, `NetMask`, `GATEIPAddress`, `DNS`,
+`MAC`, `DeviceID` (1), `Language` (69), `VOLUME` (70), `LockOn` (10),
+`IdleMinute` (30), `MustEnroll` (0), `MThreshold` (35), `VThreshold` (15),
+`RS232BaudRate` (115200), `WorkCode` (0), `~SSR` (1), `~MaxUserCount` (2),
+`~MaxAttLogCount` (3), `~MaxFingerCount` (4).
+
+> The `~Max*Count` values are 2, 3 and 4 -- sequential, and nothing like the
+> real capacities. They are not capacity fields on this firmware. Capacities
+> come from `read_sizes()`.
+
+> **`IPAddress` reports 192.168.1.201 while the device answers at
+> 192.168.0.16.** The stored static configuration is not the address in use.
+> Never reconnect or scan from this field.
+
+**Refused (4999), so absent on this model:** every workcode, department, group,
+shift and timezone option; SMS; user photos; door, lock, alarm, bell and buzzer
+options; all the `*Stamp` change counters; every server/cloud push option
+(`ServerIP`, `WebServerIP`, `CloudEnable`, `TransFlag`, `TransTimes`,
+`Realtime`); `ComKey`.
+
+The absent `*Stamp` counters matter: **the device offers no incremental-sync
+handle.** Full re-reads remain the only way to reconcile, which is what the
+sync engine already assumes.
+
+## Other data tables (PHASE 15)
+
+`CMD_DB_RRQ` (7) with each function selector:
+
+| Selector | Result on this device |
+| --- | --- |
+| `FCT_ATTLOG` (1) | 244 bytes, identical to `CMD_ATTLOG_RRQ` |
+| `FCT_FINGERTMP` (2) | 1682 bytes, 2 entries -- implemented |
+| `FCT_OPLOG` (4) | **528 bytes = 33 records of 16 bytes** -- not decoded |
+| `FCT_SMS` (6) | empty (4-byte payload) |
+| `FCT_UDATA` (7) | empty |
+| `FCT_WORKCODE` (8) | empty; `WorkCode=0` |
+
+**The device keeps its own operation log**, readable and currently unused. 33
+records, and `read_sizes()` `fields[10]` (pyzk's `dummy`) also reads 33 --
+almost certainly the oplog count. Each record has a packed ZK timestamp at
+bytes 4:8. Decoding it would show keypad-side activity -- enrolments,
+deletions, admin menu access -- which the application cannot currently see at
+all.
+
+## read_sizes() (PHASE 15)
+
+The raw `CMD_GET_FREE_SIZES` (50) response is **112 bytes, 28 int32s**. pyzk
+parses 80 of them plus a 12-byte face block and never reads fields 23-27.
+
+With two users enrolled: `users=2 fingers=2 records=6 dummy=33 cards=2
+fingers_cap=400 users_cap=200 rec_cap=30000 fingers_av=398 users_av=198
+rec_av=29994 faces=2 faces_cap=200`.
+
+Capacities and availability are reliable and worth surfacing. **`cards` is
+not**: it is pyzk's guess at an unlabelled field, and it did not change when a
+third user was added, so it does not track users and nothing establishes what
+it counts.
+
+## Live events (PHASE 15, still UNDETERMINED)
+
+Which of the four body sizes (12/32/36/52) this firmware sends cannot be
+established by reading -- it needs a real badge. PHASE 14 captured and parsed a
+live event but did not record which layout matched.
+
+The adapter now logs `live_body_bytes` whenever it decodes a live event, so the
+next punch anyone captures settles it at no cost.
+
+## Remote recovery (PHASE 15)
+
+`ZK.restart()` (`CMD_RESTART`, 1004) and `ZK.poweroff()` (1005) are ordinary
+in-session commands. When the device's ZK service stops completing sessions --
+as it did in the UID 901 incident -- **there is no remote reset**, because the
+one the protocol offers needs the service that failed. TCP 4370 continues to
+accept connections throughout, so reachability proves nothing about health.
+
+Dropbear SSH listens on TCP 3718 and is the only out-of-band route; it needs
+device credentials. Ports 22, 80 and 8080 are refused.
+
+A patient reconnect loop is worth having: the device recovered on its own after
+about forty minutes and accepted `CMD_RESTART` immediately.
 
 ## Relevant external research
 

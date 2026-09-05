@@ -42,28 +42,43 @@ _FORBIDDEN_PYZK_CALLS = frozenset(
 
 #: Name fragments that must not appear on the device classes. A method that
 #: exists is a method something can call, and none of these has MB1 evidence.
-_FORBIDDEN_DEVICE_NAMES = ("finger", "face", "template", "enroll", "card")
+#:
+#: "finger" is deliberately NOT here since PHASE 15: fingerprint *enumeration*
+#: is proven on the real device and implemented. "template" still is, because
+#: reading, writing or enrolling one remains unproven -- and the enumeration
+#: method is held to that by
+#: :meth:`TestNoBiometricOrCardSurface.test_fingerprint_enumeration_never_yields_template_bytes`.
+_FORBIDDEN_DEVICE_NAMES = ("face", "template", "enroll", "card")
+
+#: The only fingerprint operation that may exist on a device class.
+_ALLOWED_FINGERPRINT_METHOD = "read_fingerprint_slots"
 
 
 class TestInvestigationCapabilities:
-    def test_fingerprint_and_face_reads_stay_unverified(self) -> None:
-        """No template read has been proven on the project MB1."""
-        for capability in (Capability.READ_FINGERPRINT, Capability.READ_FACE):
-            state = NG_MB1_CAPABILITIES.state(capability)
-            assert state.support is Support.UNVERIFIED
-            assert not state.usable
-            assert not state.proven
-            with pytest.raises(DeviceCapabilityError):
-                NG_MB1_CAPABILITIES.require(capability)
+    def test_face_reads_stay_unverified(self) -> None:
+        """pyzk has no face-template API and no MB1 command is known."""
+        state = NG_MB1_CAPABILITIES.state(Capability.READ_FACE)
+        assert state.support is Support.UNVERIFIED
+        assert not state.usable
+        assert not state.proven
+        with pytest.raises(DeviceCapabilityError):
+            NG_MB1_CAPABILITIES.require(Capability.READ_FACE)
 
-    def test_biometric_reads_stay_locked_with_every_write_unlock(self) -> None:
-        """The adapter's unlock mapping never enables biometric capabilities."""
+    def test_fingerprint_reads_are_proven_for_enumeration_only(self) -> None:
+        """PHASE 15 proved enumeration on hardware. It proved nothing more."""
+        state = NG_MB1_CAPABILITIES.state(Capability.READ_FINGERPRINT)
+        assert state.support is Support.SUPPORTED
+        assert state.proven
+        assert "enumerat" in state.reason.lower()
+        assert "template" in state.reason.lower()
+
+    def test_face_reads_stay_locked_with_every_write_unlock(self) -> None:
+        """The adapter's unlock mapping never enables an unproven capability."""
         for capabilities in (
             _resolve_capabilities(allow_writes=True, allow_credential_writes=False),
             _resolve_capabilities(allow_writes=True, allow_credential_writes=True),
         ):
-            for capability in (Capability.READ_FINGERPRINT, Capability.READ_FACE):
-                assert not capabilities.supports(capability)
+            assert not capabilities.supports(Capability.READ_FACE)
 
     def test_card_writing_stays_unsupported_on_both_devices(self) -> None:
         """PROTOCOL.md: no card field has been identified in the MB1 record."""
@@ -83,6 +98,12 @@ class TestNoBiometricOrCardSurface:
             name for name in public if any(part in name.lower() for part in _FORBIDDEN_DEVICE_NAMES)
         }
         assert not hits, f"{device_type.__name__} must not expose {sorted(hits)}"
+
+        fingerprint_methods = {name for name in public if "finger" in name.lower()}
+        assert fingerprint_methods <= {_ALLOWED_FINGERPRINT_METHOD}, (
+            f"{device_type.__name__} exposes an unexpected fingerprint operation: "
+            f"{sorted(fingerprint_methods - {_ALLOWED_FINGERPRINT_METHOD})}"
+        )
 
     @pytest.mark.parametrize("module", [mb1_module, mock_module])
     def test_neither_protocol_module_calls_pyzk_template_or_enroll_methods(

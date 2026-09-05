@@ -21,6 +21,8 @@ __all__ = [
     "EMPLOYEE_PRIVILEGE",
     "build_attendance_payload",
     "build_attendance_record",
+    "build_fingerprint_entry",
+    "build_fingerprint_payload",
     "build_live_event",
     "build_user_payload",
     "build_user_record",
@@ -185,3 +187,24 @@ def sample_users() -> bytes:
             ),
         ]
     )
+
+
+def build_fingerprint_entry(
+    *, uid: int, finger_index: int = 6, valid: int = 1, template_bytes: int = 838
+) -> bytes:
+    """One fingerprint-store entry with a placeholder template.
+
+    The template body is filler, never a real biometric: these tests only ever
+    assert that template bytes are counted and discarded, never returned.
+    """
+    return (
+        pack("<HHbb", 6 + template_bytes, uid, finger_index, valid)
+        + bytes([CREDENTIAL_MARKER_BYTE]) * template_bytes
+    )
+
+
+def build_fingerprint_payload(entries: list[bytes], *, declared_size: int | None = None) -> bytes:
+    """A buffered fingerprint read: 4-byte total size then the entries."""
+    body = b"".join(entries)
+    size = len(body) if declared_size is None else declared_size
+    return pack("<I", size) + body

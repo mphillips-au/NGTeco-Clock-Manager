@@ -2,6 +2,107 @@
 
 ## Unreleased
 
+### PHASE 15 — Capability investigation against the real NG-MB1 (2026-09-06)
+
+The first session to write to the real device (serial NBF6260700048). An
+investigation, not a feature: the full report, per-capability evidence map,
+prioritised roadmap and incident write-up are in `phases/PHASE-15.md`.
+
+#### Incident — read this first
+
+A user record written with a **13-character user ID**, against the device's own
+`~PIN2Width=9`, was accepted and read back intact. Afterwards the device lost
+**both enrolled fingerprint templates** (`fingers` 2 -> 0, faces and PINs
+unaffected), that record became undeletable, and the ZK service stopped
+completing sessions for about forty minutes while TCP 4370 stayed open. The
+device recovered on its own and was rebooted with `CMD_RESTART`.
+
+Attribution is **not established** — two well-formed deletes happened between
+the long-ID write and the first observation of `fingers=0`. The long user ID is
+the only out-of-spec operation in the sequence and the only record that became
+unmanageable.
+
+Left for the operator, physically: re-enrol both fingerprints, and delete
+`ZZTEST-LONGID` at UID 901 from the keypad. Both real users' records were
+confirmed **byte-identical** to their pre-write snapshots, and attendance is
+unchanged at 6 records.
+
+#### Proven on hardware
+
+- **The write path works.** `CMD_USER_WRQ` + `CMD_REFRESHDATA`: create, rename,
+  privilege 0 -> 14 -> 0, PIN set, rename with the PIN preserved, PIN clear,
+  and delete, each verified by read-back on disposable `ZZTEST-` accounts.
+- **The PIN is at bytes 3:11**, NUL-padded ASCII. `has_credential_data` really
+  does mean "a PIN is set", proven in both directions.
+- **The device accepts an application-chosen UID** (UID 900, above its 200-user
+  capacity, stored and deleted cleanly).
+- **Fingerprints can be enumerated**: `CMD_DB_RRQ`/`FCT_FINGERTMP`, entries
+  framed `<HHbb`, and the UIDs match the 120-byte user records exactly.
+- **Writable field budgets are smaller than the record regions**: user ID 9
+  bytes, last name 23. A 30-character last name came back truncated to 23.
+- **The 40-byte attendance record's leading uint16 is a record index**, now
+  corroborated across two users (index 6 belongs to user "2").
+- A large read-only device-option surface (`CMD_OPTIONS_RRQ`) and the device's
+  own 33-record operation log (`FCT_OPLOG`) exist and are untouched.
+
+#### The defect that hid all of it
+
+`_compare_records` demanded byte equality outside the credential region, so
+**every successful write failed verification**. The MB1 does not store the bytes
+it is given: it sets byte 87 itself, and it does not zero-fill field tails, so
+records carry residue from previous occupants (the live UID 2 record reads
+`"Stilo\0nis"` — the tail of "Gianginis"). Verification now compares decoded
+fields plus credential presence, and was re-run end to end on hardware.
+
+#### Capability model
+
+- New `Support.OPERATOR_LOCKED` and `DeviceCapabilities.locked()`, separating
+  *the device supports this* from *this installation may do it*. Without it,
+  graduating `WRITE_USERS` to `SUPPORTED` would have switched writing on
+  everywhere — the capability state had been doubling as the safety gate.
+- `WRITE_USERS`, `DELETE_USERS`, `WRITE_USER_PASSWORD` and `READ_FINGERPRINT`
+  (enumeration only) -> `SUPPORTED`, each carrying its hardware evidence.
+- `SET_TIME` and `READ_FACE` stay `UNVERIFIED`; `WRITE_USER_CARD` and
+  `CLEAR_ATTENDANCE` stay `UNSUPPORTED`.
+
+#### Code
+
+- `src/clockmanager/protocol/mb1.py`: field-semantic `_compare_records`; new
+  `read_fingerprint_slots()`; live-event body size logged so the next real
+  punch settles which layout this firmware sends.
+- `src/clockmanager/protocol/records.py`: `parse_fingerprint_payload`, which
+  discards template bytes at the parser boundary.
+- `src/clockmanager/protocol/builders.py`: refuses an over-long user ID or last
+  name, in the builder as well as the domain layer.
+- `src/clockmanager/protocol/constants.py`: `USER_PASSWORD_SLICE` (no longer a
+  candidate), `USER_ID_WRITABLE_BYTES`, `USER_LAST_NAME_WRITABLE_BYTES`,
+  `USER_DEVICE_FLAG_OFFSETS`, `CMD_DB_RRQ`, `FCT_FINGERTMP`.
+- `src/clockmanager/protocol/trace.py`: **`CMD_DB_RRQ` payloads are withheld
+  whole.** Wiring the fingerprint read into diagnostics without this would have
+  hex-dumped real biometric templates into the trace and its export.
+- `src/clockmanager/domain/models.py`: `FingerprintSlot` — four integers, no
+  bytes.
+- `src/clockmanager/domain/users.py`: `LAST_NAME_MAX_BYTES` 37 -> 23,
+  `USER_ID_MAX_BYTES` 24 -> 9.
+- `src/clockmanager/services/diagnostics.py`: a fingerprint-slot step in the
+  protocol trace, reporting metadata only.
+
+#### Tests
+
+`tests/unit/test_phase15_capabilities.py` (37 tests): every capability
+graduation, both field budgets, the read-back comparison's tolerance *and* its
+strictness, the fingerprint entry framing and UID mapping, and the fact that no
+template byte can reach a preview or a trace step. Existing capability tests
+updated for `OPERATOR_LOCKED`. Full suite: **875 passed**, ruff and mypy clean.
+
+#### Not determined
+
+The card offset (no card available), what `status` means (nobody on site to
+badge), which live-event layout this firmware sends, what bytes 90 / 83:87 /
+11:35 hold, whether `read_sizes().cards` counts cards, what actually destroyed
+the fingerprints, and how to delete UID 901 over the protocol. Each is listed in
+`phases/PHASE-15.md` with what it would take.
+
 ### PHASE 14 (QA) — Production QA against the real NG-MB1 (2026-09-04)
 
 > Shares a number with "PHASE 14 — Windows Packaging" below: two sessions

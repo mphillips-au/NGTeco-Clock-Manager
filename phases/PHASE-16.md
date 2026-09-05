@@ -1,7 +1,7 @@
-# PHASE 16 — Web/API
+# PHASE 16 — Synology / Linux Headless Service
 
 ## Goal
-Build the future web/API boundary over the headless core.
+Reuse the proven device/sync core without the Windows GUI.
 
 ## Read
 - AGENTS.md
@@ -9,21 +9,19 @@ Build the future web/API boundary over the headless core.
 - STATUS.md
 - CHANGELOG.md
 - ARCHITECTURE.md
+- PROTOCOL.md
 - SECURITY.md
 - TESTING.md
 
-Build an API (FastAPI unless architecture requires otherwise) for:
-- auth
-- roles
-- devices
-- employees
-- users
-- attendance
-- live state
-- timesheets
-- reports
-- audit
-- sync
+Build a Linux-compatible headless service and Docker packaging suitable for Synology Container Manager.
 
-The browser must NEVER talk directly to TCP 4370.
-Do not duplicate protocol logic.
+Reuse:
+- MB1 protocol
+- 120-byte parser
+- attendance engine
+- live capture
+- reconciliation
+- persistence
+
+Do not duplicate protocol code.
+Add health checks, structured logs, graceful shutdown and reconnect.

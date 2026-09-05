@@ -14,6 +14,7 @@ __all__ = [
     "ATTENDANCE_RECORD_SIZES",
     "CMD_ACK_OK",
     "CMD_ATTLOG_RRQ",
+    "CMD_DB_RRQ",
     "CMD_DELETE_USER",
     "CMD_REFRESHDATA",
     "CMD_REG_EVENT",
@@ -22,7 +23,9 @@ __all__ = [
     "DEFAULT_PORT",
     "EF_ATTLOG",
     "EMPLOYEE_PRIVILEGE",
+    "FCT_FINGERTMP",
     "FCT_USER",
+    "FINGERPRINT_ENTRY_HEADER_SIZE",
     "LIVE_EVENT_BUFFER_BYTES",
     "MAX_DEVICE_YEAR",
     "MAX_USER_UID",
@@ -32,13 +35,16 @@ __all__ = [
     "SIZE_PREFIX_BYTES",
     "USER_CREDENTIAL_SIZE",
     "USER_CREDENTIAL_SLICE",
+    "USER_DEVICE_FLAG_OFFSETS",
     "USER_FIRST_NAME_SIZE",
     "USER_FIRST_NAME_SLICE",
     "USER_ID_SIZE",
     "USER_ID_SLICE",
+    "USER_ID_WRITABLE_BYTES",
     "USER_LAST_NAME_SIZE",
     "USER_LAST_NAME_SLICE",
-    "USER_PASSWORD_CANDIDATE_SLICE",
+    "USER_LAST_NAME_WRITABLE_BYTES",
+    "USER_PASSWORD_SLICE",
     "USER_PRIVILEGE_OFFSET",
     "USER_UID_SLICE",
     "WRITABLE_PRIVILEGES",
@@ -55,6 +61,15 @@ CMD_USERTEMP_RRQ: Final = 9
 CMD_ATTLOG_RRQ: Final = 13
 #: Buffered-read function selector for user data (ZK ``FCT_USER``).
 FCT_USER: Final = 5
+#: Read a data table from the device (ZK ``CMD_DB_RRQ``). Used with
+#: :data:`FCT_FINGERTMP` to enumerate the fingerprint store. Read-only.
+CMD_DB_RRQ: Final = 7
+#: Buffered-read function selector for fingerprint templates (ZK
+#: ``FCT_FINGERTMP``). VERIFIED on the project NG-MB1 (PHASE 15).
+FCT_FINGERTMP: Final = 2
+#: Each fingerprint entry is framed ``<HHbb`` -- total entry size, user UID,
+#: finger index, valid flag -- followed by ``size - 6`` template bytes.
+FINGERPRINT_ENTRY_HEADER_SIZE: Final = 6
 #: Register for real-time events (ZK ``CMD_REG_EVENT``).
 CMD_REG_EVENT: Final = 500
 #: Real-time event flag for attendance logs (ZK ``EF_ATTLOG``).
@@ -103,13 +118,39 @@ USER_FIRST_NAME_SIZE: Final = 24
 USER_LAST_NAME_SIZE: Final = 37
 USER_ID_SIZE: Final = 24
 
-#: UNVERIFIED. Where a PIN is believed to sit inside the 32-byte credential
-#: region, by analogy with the generic ZKTeco record, whose 8-byte password
-#: field follows the privilege byte. The rest of the region has no known
-#: meaning and is always preserved byte-for-byte from the device's own record.
-#: Nothing writes here unless an operator has explicitly unlocked
-#: ``Capability.WRITE_USER_PASSWORD`` for controlled testing.
-USER_PASSWORD_CANDIDATE_SLICE: Final = slice(3, 11)
+#: VERIFIED (PHASE 15) on the project NG-MB1. The PIN is an 8-byte field at the
+#: start of the credential region, holding the digits as NUL-padded ASCII.
+#: Writing "1234" to a disposable user stored exactly ``b"1234"`` at bytes 3:7
+#: with 7:11 zero and the remaining 24 bytes of the region untouched; clearing
+#: zeroed it; a name-only update preserved it. The remaining bytes 11:35 have
+#: no known meaning and are always preserved byte-for-byte from the device's
+#: own record.
+USER_PASSWORD_SLICE: Final = slice(3, 11)
+
+#: Bytes inside the record that the **device** owns and rewrites itself. A
+#: write must not expect to read these back as it sent them (PHASE 15):
+#:
+#: * 87 -- set to 0x01 by the device on every stored record, whatever we send.
+#: * 90 -- observed 0x01 only on users with an enrolled biometric, 0x00 on
+#:   freshly created users. Its meaning is UNVERIFIED.
+USER_DEVICE_FLAG_OFFSETS: Final[tuple[int, ...]] = (87, 90)
+
+#: How many bytes of each variable field the device will actually keep.
+#:
+#: These are SMALLER than the record regions above, which is the whole point:
+#: the record has room the device will not honour, and writing into it reaches
+#: bytes the device owns.
+#:
+#: * Last name: a 30-character last name written to a disposable user came back
+#:   truncated to 23 characters, with the 24th byte zeroed by the device and
+#:   byte 88 overwritten. The usable field is 24 bytes including the NUL.
+#: * User ID: the device reports ``~PIN2Width=9``. A 13-character user ID was
+#:   accepted and read back intact, but that record then became undeletable and
+#:   the device stopped completing protocol sessions until it was rebooted
+#:   (PHASE 15, "The UID 901 incident"). Nine bytes is the device's own stated
+#:   width and is not exceeded again.
+USER_LAST_NAME_WRITABLE_BYTES: Final = 23
+USER_ID_WRITABLE_BYTES: Final = 9
 
 #: Largest UID the 2-byte UID field can hold.
 MAX_USER_UID: Final = 0xFFFF

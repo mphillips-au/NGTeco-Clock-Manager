@@ -75,9 +75,37 @@ Device writing is **off by default** and is enabled per installation with
 `CLOCKMANAGER_ENABLE_CREDENTIAL_WRITES=1`, because the credential region's
 layout is unverified.
 
+## Biometric data (PHASE 15)
+
+The fingerprint store can be **enumerated** on the real device. Only metadata
+crosses the protocol boundary: `FingerprintSlot` carries the user's device UID,
+the finger index, the valid flag and the template **length** -- four integers
+and no bytes. Template contents are discarded inside
+`parse_fingerprint_payload` and are never returned, logged, exported or
+persisted.
+
+Two consequences are enforced rather than trusted:
+
+- **`CMD_DB_RRQ` payloads are withheld whole from protocol traces.** The table
+  read can return the fingerprint store, and the function selector that would
+  say which table it was is not part of the payload, so a trace reports the
+  size and nothing else. Adding the fingerprint read to diagnostics without
+  this would have hex-dumped real templates into the trace and its export.
+- **No template read, upload, delete or enrolment operation exists** in the
+  adapter or the interface, and a test asserts that the only fingerprint method
+  on a device class is the enumeration one.
+
+Face templates remain unreadable: no command is known.
+
 ## User credential data
 
 No user PIN, card identifier or biometric template is persisted anywhere.
+
+The PIN's location in the record is now known (bytes 3:11, ASCII). That changes
+nothing about how it is handled: the region is still confined to
+`clockmanager.protocol`, still excluded from `repr`, still never decoded for
+display, and the domain `DeviceUser` still carries only `has_credential_data`.
+Knowing where a secret lives is not a reason to start reading it.
 
 A PIN supplied by an operator exists only for the duration of one write:
 

@@ -342,7 +342,7 @@ class TestCapabilityEnforcement:
             Capability.SET_TIME,
             Capability.CLEAR_ATTENDANCE,
             Capability.READ_FACE,
-            Capability.READ_FINGERPRINT,
+            Capability.WRITE_USER_CARD,
         ):
             with pytest.raises(DeviceCapabilityError):
                 device.capabilities.require(capability)
@@ -360,20 +360,29 @@ class TestCapabilityEnforcement:
             device.capabilities.require(capability)
 
     def test_writing_is_locked_until_an_operator_unlocks_it(self) -> None:
-        """No MB1 has accepted a record from this path, so it starts locked."""
+        """PHASE 15 proved the write path; that is not permission to use it."""
         state = build_device(FakeTransport()).capabilities.state(Capability.WRITE_USERS)
-        assert state.support is Support.UNVERIFIED
+        assert state.support is Support.OPERATOR_LOCKED
         assert not state.usable
-        assert "120-byte" in state.reason
+        assert state.proven
+        assert "not enabled" in state.reason
 
-    def test_unlocking_reports_operator_enabled_never_verified(self) -> None:
-        """An unlocked capability must not masquerade as proven on hardware."""
-        state = build_device(FakeTransport(), allow_writes=True).capabilities.state(
-            Capability.WRITE_USERS
-        )
+    def test_an_unproven_capability_still_unlocks_as_operator_enabled(self) -> None:
+        """A capability with no hardware evidence must never look proven."""
+        capabilities = build_device(FakeTransport()).capabilities
+        unlocked = capabilities.unlocked([Capability.SET_TIME], reason="probe")
+        state = unlocked.state(Capability.SET_TIME)
         assert state.support is Support.OPERATOR_ENABLED
         assert state.usable
         assert not state.proven
+
+    def test_unlocking_a_proven_capability_reports_it_as_supported(self) -> None:
+        state = build_device(FakeTransport(), allow_writes=True).capabilities.state(
+            Capability.WRITE_USERS
+        )
+        assert state.support is Support.SUPPORTED
+        assert state.usable
+        assert state.proven
 
     def test_card_writing_stays_unsupported_and_cannot_be_unlocked(self) -> None:
         """PROTOCOL.md: no card field has been identified in the MB1 record."""

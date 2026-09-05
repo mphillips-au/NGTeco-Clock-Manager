@@ -16,6 +16,7 @@ __all__ = [
     "DeviceIdentity",
     "DeviceInfo",
     "DeviceUser",
+    "FingerprintSlot",
     "Privilege",
     "PunchDirection",
     "describe_privilege",
@@ -201,3 +202,28 @@ class DeviceInfo:
             ("Fingerprint templates", _count(self.fingerprint_count)),
             ("Face templates", _count(self.face_count)),
         ]
+
+
+@dataclass(frozen=True, slots=True)
+class FingerprintSlot:
+    """One enrolled fingerprint, described but never disclosed.
+
+    The device's fingerprint store can be enumerated (``PROTOCOL.md``,
+    "Fingerprint enumeration"), which answers the operationally useful
+    questions -- who has a finger enrolled, how many, and which slot -- without
+    the template itself.
+
+    ``template_bytes`` is the **length** of the stored template. The template
+    contents are never carried on this type, never returned from the protocol
+    layer and never logged, exported or persisted: they are biometric data and
+    ``SECURITY.md`` forbids it.
+    """
+
+    device_uid: int
+    finger_index: int
+    valid: int
+    template_bytes: int
+
+    @property
+    def is_valid(self) -> bool:
+        return self.valid != 0
