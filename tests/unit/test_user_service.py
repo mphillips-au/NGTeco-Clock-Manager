@@ -103,17 +103,22 @@ def fully_unlocked(context: ApplicationContext) -> Iterator[UserService]:
 
 class TestWriteAvailability:
     def test_writes_are_off_by_default(self, locked: UserService) -> None:
-        """No MB1 has accepted a record from this path, so it ships locked."""
+        """The write path is proven on hardware and still ships switched off.
+
+        PHASE 15 graduated it from unproven to proven, which changes the
+        wording but not the default: evidence that a device accepts a record
+        is not permission for an installation to send one.
+        """
         availability = locked.write_availability()
         assert not availability.users
         assert not availability.credentials
-        assert "disposable test user" in availability.reason
+        assert "CLOCKMANAGER_ENABLE_DEVICE_WRITES" in availability.reason
 
     def test_enabling_writes_does_not_enable_credential_writes(self, unlocked: UserService) -> None:
         availability = unlocked.write_availability()
         assert availability.users
         assert not availability.credentials
-        assert "unverified" in availability.reason
+        assert "CLOCKMANAGER_ENABLE_CREDENTIAL_WRITES" in availability.reason
 
     def test_credential_writes_require_user_writes(self, context: ApplicationContext) -> None:
         service = UserService(

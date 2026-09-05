@@ -11,9 +11,19 @@ from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 from struct import pack
 
-from clockmanager.domain.models import AttendanceEvent, DeviceUser
+from clockmanager.domain.models import (
+    AttendanceEvent,
+    DeviceUser,
+    FingerprintSlot,
+    OperationLogEntry,
+)
 
-__all__ = ["sample_attendance", "sample_user_payload"]
+__all__ = [
+    "sample_attendance",
+    "sample_fingerprints",
+    "sample_operation_log",
+    "sample_user_payload",
+]
 
 _USER_RECORD_SIZE = 120
 
@@ -94,3 +104,38 @@ def sample_attendance(
             )
 
     return sorted(events, key=lambda event: event.occurred_at)
+
+
+def sample_fingerprints() -> list[FingerprintSlot]:
+    """Synthetic fingerprint enrolments: metadata only, never a template.
+
+    Two of the five sample users have a finger enrolled and the rest do not,
+    so the Users screen shows both states and the "cannot clock in" case is
+    visible without hardware. ``template_bytes`` is a plausible length; there
+    is no template here, real or invented.
+    """
+    return [
+        FingerprintSlot(device_uid=1, finger_index=6, valid=1, template_bytes=838),
+        FingerprintSlot(device_uid=2, finger_index=6, valid=1, template_bytes=828),
+        FingerprintSlot(device_uid=2, finger_index=1, valid=1, template_bytes=812),
+    ]
+
+
+def sample_operation_log(reference: datetime | None = None) -> list[OperationLogEntry]:
+    """A short synthetic keypad log.
+
+    Operation codes are arbitrary numbers, which is exactly how the real ones
+    are shown: their meanings are not established for this model, so the sample
+    data must not imply otherwise.
+    """
+    end = reference if reference is not None else datetime.now()  # noqa: DTZ005
+    return [
+        OperationLogEntry(
+            index=index,
+            operation=operation,
+            operator_uid=1,
+            occurred_at=end - timedelta(hours=hours),
+            parameters=(0, 0, 0),
+        )
+        for index, (operation, hours) in enumerate(((5, 72), (6, 48), (5, 24), (11, 3)))
+    ]

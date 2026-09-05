@@ -47,13 +47,22 @@ from clockmanager.protocol.errors import (
 from clockmanager.protocol.interface import (
     AttendanceDevice,
     DeviceConnectionSettings,
+    InspectableDevice,
     WritableUserDevice,
 )
 from clockmanager.protocol.mb1 import NGTecoMB1Device
 from clockmanager.protocol.mock import MockAttendanceDevice, MockDeviceScript
+from clockmanager.protocol.options import (
+    NG_MB1_OPTIONS,
+    DeviceOptionSpec,
+    is_sensitive_option_name,
+    option_specs,
+)
 from clockmanager.protocol.records import (
     parse_attendance_payload,
+    parse_device_option_response,
     parse_live_event,
+    parse_operation_log_payload,
     parse_user_payload,
     parse_user_record,
 )
@@ -61,6 +70,7 @@ from clockmanager.protocol.retry import RetryPolicy
 
 __all__ = [
     "NG_MB1_CAPABILITIES",
+    "NG_MB1_OPTIONS",
     "AttendanceDevice",
     "Capability",
     "CapabilityState",
@@ -71,12 +81,14 @@ __all__ = [
     "DeviceConnectionSettings",
     "DeviceError",
     "DeviceNotConnectedError",
+    "DeviceOptionSpec",
     "DeviceParseError",
     "DeviceProtocolError",
     "DeviceTimeoutError",
     "DeviceValidationError",
     "DeviceVerificationError",
     "DeviceWriteError",
+    "InspectableDevice",
     "MockAttendanceDevice",
     "MockDeviceScript",
     "NGTecoMB1Device",
@@ -86,8 +98,12 @@ __all__ = [
     "WritableUserDevice",
     "build_user_record",
     "describe_record_fields",
+    "is_sensitive_option_name",
+    "option_specs",
     "parse_attendance_payload",
+    "parse_device_option_response",
     "parse_live_event",
+    "parse_operation_log_payload",
     "parse_raw_user_records",
     "parse_user_payload",
     "parse_user_record",

@@ -132,6 +132,14 @@ class ProtocolTrace:
     attendance: AttendanceSnapshot | None = None
     live: LiveWindow | None = None
     capabilities: tuple[tuple[str, str, str], ...] = ()
+    #: Name/value pairs for the device settings the trace could read. Every
+    #: one is from the allow-list in :mod:`clockmanager.protocol.options`, so
+    #: none of them can carry a credential.
+    options: tuple[tuple[str, str], ...] = ()
+    #: Capacity and usage lines from ``CMD_GET_FREE_SIZES``.
+    storage: tuple[tuple[str, str], ...] = ()
+    #: The device's own operation-log entries, as display rows.
+    operation_log: tuple[tuple[str, str, str], ...] = ()
     error: str = ""
     error_type: str | None = None
 
@@ -358,6 +366,41 @@ class DiagnosticsService:
                     detail=_describe_fingerprint_slots(device),
                 )
 
+            with recorder.timed("session", "RX", "Storage"):
+                storage_rows = _read_storage_rows(device)
+            recorder.record(
+                "session",
+                "LOCAL",
+                "Storage",
+                detail="; ".join(f"{label}={value}" for label, value in storage_rows)
+                or "Not available on this device.",
+            )
+
+            with recorder.timed("session", "RX", "Device settings"):
+                option_rows = _read_option_rows(device)
+            recorder.record(
+                "session",
+                "LOCAL",
+                "Device settings",
+                detail=f"{sum(1 for _, value in option_rows if value)} of "
+                f"{len(option_rows)} allow-listed options answered"
+                if option_rows
+                else "Not available on this device.",
+            )
+
+            with recorder.timed("session", "RX", "Device operation log"):
+                operation_rows = _read_operation_log_rows(device, limit=max_records)
+            recorder.record(
+                "session",
+                "LOCAL",
+                "Device operation log",
+                detail=f"{len(operation_rows)} entry/entries shown. The device's own "
+                "record of keypad activity; operation codes are reported as numbers "
+                "because their meanings are not verified on this model."
+                if operation_rows
+                else "Not available on this device.",
+            )
+
             if live_seconds > 0:
                 live = self._listen(device, recorder, live_seconds)
             else:
@@ -399,6 +442,9 @@ class DiagnosticsService:
             attendance=attendance,
             live=live,
             capabilities=capabilities,
+            options=option_rows,
+            storage=storage_rows,
+            operation_log=operation_rows,
         )
 
     def _listen(self, device: Any, recorder: TraceRecorder, live_seconds: float) -> LiveWindow:
@@ -552,6 +598,12 @@ class DiagnosticsService:
                 {"capability": name, "support": support, "reason": reason}
                 for name, support, reason in trace.capabilities
             ],
+            "storage": [{"counter": label, "value": value} for label, value in trace.storage],
+            "options": [{"setting": label, "value": value} for label, value in trace.options],
+            "operation_log": [
+                {"when": when, "operation": operation, "detail": detail}
+                for when, operation, detail in trace.operation_log
+            ],
             "error": trace.error,
         }
         payload = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
@@ -573,6 +625,68 @@ class DiagnosticsService:
         )
         _logger.info("Exported diagnostics", extra={"device": trace.profile_name})
         return payload, filename, "application/json"
+
+
+def _read_storage_rows(device: Any) -> tuple[tuple[str, str], ...]:
+    """Capacity and usage lines, or nothing if the device will not report them."""
+    storage = _optional_read(device, Capability.READ_STORAGE, "read_storage")
+    if storage is None:
+        return ()
+    return tuple(storage.as_rows())
+
+
+def _read_option_rows(device: Any) -> tuple[tuple[str, str], ...]:
+    """Allow-listed device settings as label/value pairs.
+
+    Safe to export: the names are a fixed catalogue, and one that could carry a
+    credential is refused inside the protocol layer before a request is built.
+    An option the firmware does not have is reported as such rather than
+    omitted, because "this model has no work codes" is a diagnostic answer.
+    """
+    options = _optional_read(device, Capability.READ_DEVICE_OPTIONS, "read_device_options")
+    if options is None:
+        return ()
+    return tuple((option.label, option.display_value) for option in options)
+
+
+def _read_operation_log_rows(device: Any, *, limit: int) -> tuple[tuple[str, str, str], ...]:
+    """The most recent operation-log entries as display rows.
+
+    Operation codes are shown as numbers. Only the timestamp inside a record is
+    verified on this device (PHASE 15); naming the codes would be inventing
+    meaning the investigation did not establish.
+    """
+    entries = _optional_read(device, Capability.READ_OPERATION_LOG, "read_operation_log")
+    if not entries:
+        return ()
+    return tuple(
+        (
+            entry.occurred_label,
+            entry.operation_label,
+            f"operator UID {entry.operator_uid}, parameters {entry.parameters}",
+        )
+        for entry in entries[-limit:]
+    )
+
+
+def _optional_read(device: Any, capability: Capability, method: str) -> Any:
+    """Call one read-only device method, or return ``None`` with a log line.
+
+    A trace step must never take the whole trace down, and the three questions
+    -- the implementation does not offer it, the capability withholds it, the
+    device errored -- are all answered the same way here: this section is
+    simply absent from the trace.
+    """
+    read = getattr(device, method, None)
+    if read is None or not device.capabilities.supports(capability):
+        return None
+    try:
+        return read()
+    except (DeviceError, ValueError) as exc:
+        _logger.warning(
+            "Diagnostics section unavailable", extra={"section": method, "error": str(exc)}
+        )
+        return None
 
 
 def _describe_fingerprint_slots(device: Any) -> str:

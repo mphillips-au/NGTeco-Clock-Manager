@@ -8,23 +8,43 @@ can be supported later, while only the NG-MB1 is implemented now.
 writing capability explicitly and a device that cannot write is a type error
 rather than a runtime surprise.
 
-There is still no interface for clearing attendance, resetting a device or
-writing biometric templates, and none may be added without device evidence.
+PHASE 15 adds a third, :class:`InspectableDevice`, for the read-only questions
+a device can answer about *itself* -- its settings, its capacities, its
+fingerprint enrolments and its own operation log. It is separate for the same
+reason: a device that cannot answer them is a type error, not a runtime
+surprise. Everything on it is a read.
+
+There is still no interface for clearing attendance, resetting a device,
+writing a device option or writing biometric templates, and none may be added
+without device evidence.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
-from clockmanager.domain.models import AttendanceEvent, DeviceInfo, DeviceUser
+from clockmanager.domain.models import (
+    AttendanceEvent,
+    DeviceInfo,
+    DeviceOption,
+    DeviceStorage,
+    DeviceUser,
+    FingerprintSlot,
+    OperationLogEntry,
+)
 from clockmanager.domain.users import UserDraft, UserWriteOutcome
 from clockmanager.protocol.capabilities import DeviceCapabilities
 from clockmanager.protocol.constants import DEFAULT_PORT
 
-__all__ = ["AttendanceDevice", "DeviceConnectionSettings", "WritableUserDevice"]
+__all__ = [
+    "AttendanceDevice",
+    "DeviceConnectionSettings",
+    "InspectableDevice",
+    "WritableUserDevice",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,4 +159,33 @@ class WritableUserDevice(AttendanceDevice, Protocol):
 
     def next_available_uid(self) -> int:
         """The lowest device UID not currently in use."""
+        ...
+
+
+@runtime_checkable
+class InspectableDevice(AttendanceDevice, Protocol):
+    """A device that can also describe itself. Every method here is a read.
+
+    These answer questions about the device rather than about the people on
+    it: how it is configured, how full it is, who has a fingerprint enrolled,
+    and what was done at the keypad. None of them changes anything, and there
+    is deliberately no write counterpart to any of them -- in particular no
+    way to write a device option, which has never been exercised on this
+    hardware and is not recoverable remotely if it goes wrong.
+    """
+
+    def read_device_options(self, names: Sequence[str] | None = None) -> list[DeviceOption]:
+        """Read named settings from the device's own allow-listed catalogue."""
+        ...
+
+    def read_storage(self) -> DeviceStorage:
+        """Read the device's capacity and usage counters."""
+        ...
+
+    def read_fingerprint_slots(self) -> list[FingerprintSlot]:
+        """Enumerate enrolled fingerprints. Never returns a template."""
+        ...
+
+    def read_operation_log(self) -> list[OperationLogEntry]:
+        """Read the device's own log of what was done at the keypad."""
         ...

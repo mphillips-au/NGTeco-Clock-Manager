@@ -16,6 +16,7 @@ from clockmanager.services.backup import (
 from clockmanager.services.devices import (
     DEFAULT_DEVICE_PORT,
     ConnectionTestResult,
+    DeviceInspection,
     DeviceProfile,
     DeviceService,
     DeviceStatus,
@@ -36,7 +37,12 @@ from clockmanager.services.employees import EmployeeProfile, EmployeeService
 from clockmanager.services.reports import ReportService
 from clockmanager.services.sync import StoredAttendance, SyncResult, SyncService, SyncSummary
 from clockmanager.services.timesheets import PayScheduleProfile, TimesheetRequest, TimesheetService
-from clockmanager.services.users import DeleteImpact, UserService, WriteAvailability
+from clockmanager.services.users import (
+    DeleteImpact,
+    EnrolledUser,
+    UserService,
+    WriteAvailability,
+)
 
 __all__ = [
     "DEFAULT_DEVICE_PORT",
@@ -56,6 +62,7 @@ __all__ = [
     "ConnectionStep",
     "ConnectionTestResult",
     "DeleteImpact",
+    "DeviceInspection",
     "DeviceProfile",
     "DeviceService",
     "DeviceStatus",
@@ -63,6 +70,7 @@ __all__ = [
     "DiscoveredDevice",
     "EmployeeProfile",
     "EmployeeService",
+    "EnrolledUser",
     "LiveWindow",
     "MockDeviceFactory",
     "OfflineDeviceState",

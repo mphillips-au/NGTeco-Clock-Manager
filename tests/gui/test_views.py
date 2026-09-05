@@ -122,6 +122,7 @@ class TestUsersView:
             "Last name",
             "Privilege",
             "PIN set",
+            "Fingerprints",
         ]
         assert set(_table_text(view._table).split()) & {"Yes", "No"}
 

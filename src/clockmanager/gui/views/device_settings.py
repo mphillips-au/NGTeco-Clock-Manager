@@ -1,8 +1,14 @@
 """Device settings view.
 
 Edits the locally stored device profile. Saving writes to the application
-database only — PHASE 02 performs no device writes, so nothing here changes
-anything on the clock itself.
+database only — nothing on this screen changes anything on the clock itself.
+
+The "Device information" tab reads the clock and shows what it says about
+itself: its settings, how full it is, which users have a fingerprint enrolled
+and its own log of keypad activity (PHASE 15). Every one of those is a read.
+There is deliberately no way to write a device setting from here: writing an
+option has never been exercised on this hardware, and a wrong IP address or
+matching threshold cannot be undone over the protocol.
 
 The communication password is masked and is never written to a log or shown in
 a status message (``SECURITY.md``).
@@ -35,6 +41,8 @@ from clockmanager.diagnostics.logging_setup import get_logger
 from clockmanager.domain.auth import Permission, Role, normalise_role
 from clockmanager.domain.models import DeviceInfo
 from clockmanager.gui.views.common import (
+    build_table,
+    fill_table,
     muted_label,
     page_header,
     primary_button,
@@ -45,6 +53,7 @@ from clockmanager.gui.views.common import (
 from clockmanager.services.devices import (
     DEFAULT_DEVICE_PORT,
     ConnectionTestResult,
+    DeviceInspection,
     DeviceProfile,
     DeviceService,
     DeviceStatus,
@@ -167,6 +176,23 @@ class DeviceSettingsView(QWidget):
         self._state_label = QLabel("", self)
         self._state_label.setWordWrap(True)
 
+        # -- Device information (PHASE 15). Read-only, and gathered in one
+        # connection so the tab costs the device a single session.
+        self._info_status = QLabel("", self)
+        self._info_status.setWordWrap(True)
+        self._read_info_button = primary_button("Read information from device", self)
+        self._read_info_button.clicked.connect(self._read_device_information)
+        self._capacity_table = build_table(
+            ("Store", "Usage"), self, sortable=False, stretch_columns=(1,)
+        )
+        self._settings_table = build_table(
+            ("Group", "Setting", "Value", "Note"), self, sortable=False, stretch_columns=(3,)
+        )
+        self._enrolment_table = build_table(
+            ("Device UID", "Finger", "State", "Template size"), self, stretch_columns=(2,)
+        )
+        self._oplog_table = build_table(("When", "Operation", "Detail"), self, stretch_columns=(2,))
+
         self._discover_host = QLineEdit(self)
         self._discover_host.setPlaceholderText("192.168.1.50")
         self._discover_port = QSpinBox(self)
@@ -280,6 +306,8 @@ class DeviceSettingsView(QWidget):
         state_tab.setLayout(state_layout)
         tabs.addTab(state_tab, "Device state")
 
+        tabs.addTab(self._build_information_tab(), "Device information")
+
         discovery_tab = QWidget(self)
         discovery_layout = QVBoxLayout()
         discovery_layout.addWidget(discovery_group)
@@ -290,6 +318,174 @@ class DeviceSettingsView(QWidget):
         self.setLayout(layout)
 
         self.refresh()
+
+    # -- device information (PHASE 15, read-only) -------------------------------
+
+    def _build_information_tab(self) -> QWidget:
+        """What the clock says about itself. Reads only, in one connection."""
+        tab = QWidget(self)
+        layout = QVBoxLayout()
+
+        header = muted_label(
+            "Everything on this tab is read from the clock and nothing is written "
+            "back. Settings cannot be changed from here: writing a device setting "
+            "has never been proven on this model, and a wrong value for an address "
+            "or a matching threshold cannot be undone remotely.",
+            self,
+        )
+        layout.addWidget(header)
+
+        actions = QHBoxLayout()
+        actions.addWidget(self._read_info_button)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+        layout.addWidget(self._info_status)
+
+        sections = QTabWidget(self)
+        sections.setAccessibleName("Device information sections")
+
+        capacity_tab = QWidget(self)
+        capacity_layout = QVBoxLayout()
+        capacity_layout.addWidget(self._capacity_table, stretch=1)
+        capacity_layout.addWidget(
+            muted_label(
+                "How full the clock is, as it reports itself. The device also "
+                "reports a card counter; it is not shown, because nothing "
+                "establishes what it counts.",
+                self,
+            )
+        )
+        capacity_tab.setLayout(capacity_layout)
+        sections.addTab(capacity_tab, "Capacity")
+
+        settings_tab = QWidget(self)
+        settings_layout = QVBoxLayout()
+        settings_layout.addWidget(self._settings_table, stretch=1)
+        settings_layout.addWidget(
+            muted_label(
+                "Settings the clock will answer for. A setting shown as not "
+                "available is one this model's firmware does not have, which is a "
+                "normal answer and not a fault.",
+                self,
+            )
+        )
+        settings_tab.setLayout(settings_layout)
+        sections.addTab(settings_tab, "Settings")
+
+        enrolment_tab = QWidget(self)
+        enrolment_layout = QVBoxLayout()
+        enrolment_layout.addWidget(self._enrolment_table, stretch=1)
+        enrolment_layout.addWidget(
+            muted_label(
+                "Which fingerprints the clock holds, listed by the device UID they "
+                "belong to. The fingerprints themselves are never read: only their "
+                "size in bytes is reported, and no template leaves the device.",
+                self,
+            )
+        )
+        enrolment_tab.setLayout(enrolment_layout)
+        sections.addTab(enrolment_tab, "Fingerprints")
+
+        oplog_tab = QWidget(self)
+        oplog_layout = QVBoxLayout()
+        oplog_layout.addWidget(self._oplog_table, stretch=1)
+        oplog_layout.addWidget(
+            muted_label(
+                "The clock's own record of what was done at its keypad — a "
+                "different question from this application's audit trail, which "
+                "records only what this application did. Operations are shown as "
+                "numbers because their meanings are not established for this model.",
+                self,
+            )
+        )
+        oplog_tab.setLayout(oplog_layout)
+        sections.addTab(oplog_tab, "Device log")
+
+        layout.addWidget(sections, stretch=1)
+        tab.setLayout(layout)
+        return tab
+
+    def _read_device_information(self) -> None:
+        """Read the selected clock in one connection, off the UI thread."""
+        profile = self._current_profile()
+        if profile is None:
+            set_status(
+                self._info_status,
+                "Save this device first, then read its information.",
+                "warning",
+            )
+            return
+        self._read_info_button.setEnabled(False)
+        set_status(self._info_status, f"Reading {profile.endpoint}…", "loading")
+        run_off_thread(
+            lambda: self._service.inspect(profile),
+            on_success=self._on_information_read,
+            on_failure=self._on_information_failure,
+        )
+
+    def _on_information_read(self, inspection: Any) -> None:
+        self._read_info_button.setEnabled(True)
+        if not isinstance(inspection, DeviceInspection):  # pragma: no cover - defensive
+            return
+        if not inspection.ok:
+            set_status(self._info_status, inspection.summary, "error")
+            self._clear_information_tables("The device could not be read.")
+            return
+
+        summary = inspection.summary
+        if inspection.notes:
+            summary += " " + " ".join(inspection.notes)
+        set_status(self._info_status, summary, "warning" if inspection.notes else "success")
+
+        identity_rows = [] if inspection.info is None else inspection.info.as_rows()
+        fill_table(
+            self._capacity_table,
+            [[label, value] for label, value in identity_rows],
+            empty_message="The device did not report its capacities.",
+        )
+        fill_table(
+            self._settings_table,
+            [list(row) for row in inspection.option_rows()],
+            empty_message="This device did not answer any settings read.",
+        )
+        fill_table(
+            self._enrolment_table,
+            [
+                [
+                    str(slot.device_uid),
+                    str(slot.finger_index),
+                    "Valid" if slot.is_valid else "Invalid",
+                    f"{slot.template_bytes} bytes (not read)",
+                ]
+                for slot in inspection.fingerprints
+            ],
+            empty_message="No fingerprints are enrolled on this device.",
+        )
+        fill_table(
+            self._oplog_table,
+            [
+                [
+                    entry.occurred_label,
+                    entry.operation_label,
+                    f"operator UID {entry.operator_uid}, parameters {entry.parameters}",
+                ]
+                for entry in reversed(inspection.operation_log)
+            ],
+            empty_message="The device reported no keypad activity.",
+        )
+
+    def _clear_information_tables(self, message: str) -> None:
+        for table in (
+            self._capacity_table,
+            self._settings_table,
+            self._enrolment_table,
+            self._oplog_table,
+        ):
+            fill_table(table, [], empty_message=message)
+
+    def _on_information_failure(self, message: str) -> None:
+        self._read_info_button.setEnabled(True)
+        set_status(self._info_status, f"Could not read the device: {message}", "error")
 
     # -- data -----------------------------------------------------------------
 

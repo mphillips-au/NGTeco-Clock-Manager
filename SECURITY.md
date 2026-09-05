@@ -97,6 +97,34 @@ Two consequences are enforced rather than trusted:
 
 Face templates remain unreadable: no command is known.
 
+Enumeration is now shown in the application (a per-user finger count on the
+Users screen, a slot list under Device information). What is displayed is a
+count and a length; nothing displayable is derived from a template.
+
+## Device settings reads
+
+The device will answer `CMD_OPTIONS_RRQ` for a named setting. Reading those is
+useful — firmware, algorithm versions, the device's own maximum user-ID width —
+and it is constrained so it cannot become a way of reading a secret off the
+clock:
+
+- **A fixed allow-list.** Only names in
+  `clockmanager.protocol.options.NG_MB1_OPTIONS` are ever requested. A caller
+  passing any other name gets nothing sent on its behalf.
+- **A credential-shaped name is refused before a request is built.**
+  `is_sensitive_option_name` rejects anything containing `key`, `comkey`,
+  `password`, `passwd`, `pwd`, `secret` or `token`, and a test asserts no
+  catalogued name matches it. `ComKey` — the device's own communication key
+  option — therefore cannot be read into a settings panel, a diagnostics export
+  or a log, whatever a future edit to the catalogue does.
+- **No option write exists.** `Capability.WRITE_DEVICE_OPTIONS` is UNSUPPORTED,
+  and `DeviceCapabilities.unlocked` refuses to unlock an unsupported
+  capability, so there is no operator flag that turns it on. `CMD_OPTIONS_WRQ`
+  is not defined as a constant anywhere in the application.
+
+The device's operation log is read the same way and is subject to the same rule
+as any other `CMD_DB_RRQ` payload: withheld whole from trace previews.
+
 ## User credential data
 
 No user PIN, card identifier or biometric template is persisted anywhere.

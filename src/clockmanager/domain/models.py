@@ -7,7 +7,7 @@ guessed at, so the GUI can show "Unknown (7)" instead of inventing a meaning.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import IntEnum
 
@@ -15,10 +15,14 @@ __all__ = [
     "AttendanceEvent",
     "DeviceIdentity",
     "DeviceInfo",
+    "DeviceOption",
+    "DeviceStorage",
     "DeviceUser",
     "FingerprintSlot",
+    "OperationLogEntry",
     "Privilege",
     "PunchDirection",
+    "StorageCounter",
     "describe_privilege",
     "describe_punch",
 ]
@@ -161,6 +165,82 @@ class AttendanceEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class StorageCounter:
+    """How much of one device store is used, and how much it holds.
+
+    Every field is optional because the device may not report it. A missing
+    number stays missing: "Not reported" is honest, ``0`` would claim the store
+    is empty.
+    """
+
+    label: str
+    used: int | None = None
+    capacity: int | None = None
+    available: int | None = None
+
+    @property
+    def free(self) -> int | None:
+        """Free slots, from the device's own figure or from the difference."""
+        if self.available is not None:
+            return self.available
+        if self.capacity is None or self.used is None:
+            return None
+        return max(self.capacity - self.used, 0)
+
+    @property
+    def percent_used(self) -> float | None:
+        """Fraction used, 0-100, or ``None`` when it cannot be worked out."""
+        if self.used is None or not self.capacity:
+            return None
+        return min(self.used / self.capacity * 100.0, 100.0)
+
+    def describe(self) -> str:
+        """One line an operator can read, inventing nothing it was not told."""
+        if self.used is None and self.capacity is None:
+            return "Not reported"
+        if self.capacity is None:
+            return f"{self.used:,} used (capacity not reported)"
+        if self.used is None:
+            return f"Capacity {self.capacity:,} (usage not reported)"
+        free = self.free
+        suffix = "" if free is None else f" — {free:,} free"
+        return f"{self.used:,} of {self.capacity:,} used{suffix}"
+
+
+@dataclass(frozen=True, slots=True)
+class DeviceStorage:
+    """What the device reports about its own capacity and usage.
+
+    Read from ``CMD_GET_FREE_SIZES``, which the application already called for
+    its record counts and then threw most of away. Nothing here is inferred:
+    each counter is a field the device sent.
+
+    ``cards`` is deliberately absent. The response carries a field ``pyzk``
+    labels ``cards``, but PHASE 15 showed it did not change when a user was
+    added and nothing establishes what it counts, so it is not shown rather
+    than shown wrongly.
+    """
+
+    users: StorageCounter = field(default_factory=lambda: StorageCounter("Users"))
+    fingerprints: StorageCounter = field(default_factory=lambda: StorageCounter("Fingerprints"))
+    attendance: StorageCounter = field(default_factory=lambda: StorageCounter("Attendance records"))
+    faces: StorageCounter = field(default_factory=lambda: StorageCounter("Faces"))
+    #: The device's own operation-log record count, when it reported one.
+    operation_log_records: int | None = None
+
+    @property
+    def counters(self) -> tuple[StorageCounter, ...]:
+        return (self.users, self.fingerprints, self.attendance, self.faces)
+
+    def as_rows(self) -> list[tuple[str, str]]:
+        """Label/value pairs for display. Contains no personal data."""
+        rows = [(counter.label, counter.describe()) for counter in self.counters]
+        if self.operation_log_records is not None:
+            rows.append(("Device operation log", f"{self.operation_log_records:,} records"))
+        return rows
+
+
+@dataclass(frozen=True, slots=True)
 class DeviceInfo:
     """A point-in-time snapshot of a device, as read from it.
 
@@ -177,17 +257,30 @@ class DeviceInfo:
     attendance_count: int | None = None
     fingerprint_count: int | None = None
     face_count: int | None = None
+    #: Capacity and usage as the device reported them, when it was asked. The
+    #: connection snapshot fills this in; a device or mock that does not
+    #: report capacities leaves it ``None`` rather than showing zeroes.
+    storage: DeviceStorage | None = None
 
     def as_rows(self) -> list[tuple[str, str]]:
         """Label/value pairs for diagnostics display.
 
-        Contains no credential or secret, so it is safe to log or show.
+        Contains no credential or secret, so it is safe to log or show. When
+        the device reported its capacities, each count is shown against the
+        capacity it belongs to ("6 of 30,000 used") rather than on its own,
+        because a bare count says nothing about how close the device is to
+        being full.
         """
 
-        def _count(value: int | None) -> str:
-            return "Not reported" if value is None else str(value)
+        def _count(value: int | None, counter: StorageCounter | None) -> str:
+            if counter is not None and counter.capacity is not None:
+                return StorageCounter(
+                    counter.label, value, counter.capacity, counter.free
+                ).describe()
+            return "Not reported" if value is None else f"{value:,}"
 
-        return [
+        storage = self.storage
+        rows = [
             ("Device name", self.identity.name),
             ("Model", self.identity.model or "Unknown"),
             ("Platform", self.identity.platform or "Unknown"),
@@ -197,11 +290,23 @@ class DeviceInfo:
                 "Device time",
                 "Unknown" if self.device_time is None else self.device_time.isoformat(),
             ),
-            ("Users on device", _count(self.user_count)),
-            ("Attendance records", _count(self.attendance_count)),
-            ("Fingerprint templates", _count(self.fingerprint_count)),
-            ("Face templates", _count(self.face_count)),
+            (
+                "Users on device",
+                _count(self.user_count, None if storage is None else storage.users),
+            ),
+            (
+                "Attendance records",
+                _count(self.attendance_count, None if storage is None else storage.attendance),
+            ),
+            (
+                "Fingerprint templates",
+                _count(self.fingerprint_count, None if storage is None else storage.fingerprints),
+            ),
+            ("Face templates", _count(self.face_count, None if storage is None else storage.faces)),
         ]
+        if storage is not None and storage.operation_log_records is not None:
+            rows.append(("Device operation log", f"{storage.operation_log_records:,} records"))
+        return rows
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,3 +332,72 @@ class FingerprintSlot:
     @property
     def is_valid(self) -> bool:
         return self.valid != 0
+
+
+@dataclass(frozen=True, slots=True)
+class DeviceOption:
+    """One named setting read back from the device.
+
+    ``value`` is ``None`` when the device refused the name. That is a normal,
+    harmless answer (the NG-MB1 returns code 4999 for an option its firmware
+    does not have) and it is worth showing: "this model has no work codes" is
+    itself useful, and it stops the same name being tried again as though it
+    might work next time.
+
+    These are reads. The application has no way to write an option, by design
+    (:mod:`clockmanager.protocol.options`).
+    """
+
+    name: str
+    label: str
+    group: str
+    value: str | None = None
+    note: str = ""
+
+    @property
+    def answered(self) -> bool:
+        return self.value is not None
+
+    @property
+    def display_value(self) -> str:
+        return self.value if self.value is not None else "Not available on this model"
+
+
+@dataclass(frozen=True, slots=True)
+class OperationLogEntry:
+    """One entry from the device's own record of what was done at the keypad.
+
+    This is a different question from the application's audit trail. The audit
+    trail records what *this application* did; the device separately records
+    enrolments, deletions and administrator menu access performed by somebody
+    standing in front of the clock, and nothing in the application could see
+    them before.
+
+    Only two things about an entry are established (PHASE 15): entries are 16
+    bytes, and bytes 4:8 hold a packed ZKTeco timestamp. The remaining fields
+    are decoded positionally from the layout the ZKTeco SDK family uses and
+    their meanings are **not verified on this device**, so they are carried as
+    raw integers and described as unknown rather than being given names this
+    application cannot stand behind.
+
+    ``occurred_at`` is ``None`` when the timestamp did not decode to a
+    plausible date, which is how a misread layout shows itself instead of
+    inventing a punch-shaped date.
+    """
+
+    index: int
+    operation: int
+    operator_uid: int
+    occurred_at: datetime | None = None
+    parameters: tuple[int, int, int] = (0, 0, 0)
+
+    @property
+    def operation_label(self) -> str:
+        """The operation code, never a guessed name for it."""
+        return f"Operation {self.operation}"
+
+    @property
+    def occurred_label(self) -> str:
+        if self.occurred_at is None:
+            return "Unreadable timestamp"
+        return self.occurred_at.isoformat(sep=" ", timespec="seconds")

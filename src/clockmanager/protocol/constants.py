@@ -16,6 +16,7 @@ __all__ = [
     "CMD_ATTLOG_RRQ",
     "CMD_DB_RRQ",
     "CMD_DELETE_USER",
+    "CMD_OPTIONS_RRQ",
     "CMD_REFRESHDATA",
     "CMD_REG_EVENT",
     "CMD_USERTEMP_RRQ",
@@ -24,6 +25,7 @@ __all__ = [
     "EF_ATTLOG",
     "EMPLOYEE_PRIVILEGE",
     "FCT_FINGERTMP",
+    "FCT_OPLOG",
     "FCT_USER",
     "FINGERPRINT_ENTRY_HEADER_SIZE",
     "LIVE_EVENT_BUFFER_BYTES",
@@ -31,6 +33,8 @@ __all__ = [
     "MAX_USER_UID",
     "MB1_USER_RECORD_SIZE",
     "MIN_DEVICE_YEAR",
+    "OPERATION_LOG_RECORD_SIZE",
+    "OPTION_RESPONSE_BYTES",
     "PYZK_USER_PACKET_SIZE",
     "SIZE_PREFIX_BYTES",
     "USER_CREDENTIAL_SIZE",
@@ -70,6 +74,21 @@ FCT_FINGERTMP: Final = 2
 #: Each fingerprint entry is framed ``<HHbb`` -- total entry size, user UID,
 #: finger index, valid flag -- followed by ``size - 6`` template bytes.
 FINGERPRINT_ENTRY_HEADER_SIZE: Final = 6
+#: Buffered-read function selector for the device's own operation log (ZK
+#: ``FCT_OPLOG``). VERIFIED on the project NG-MB1 (PHASE 15): the read returned
+#: 528 bytes for 33 records.
+FCT_OPLOG: Final = 4
+#: Each operation-log record is 16 bytes (528 / 33, PHASE 15).
+OPERATION_LOG_RECORD_SIZE: Final = 16
+#: Read one named device option (ZK ``CMD_OPTIONS_RRQ``). The payload is a
+#: NUL-terminated option name; the reply is ``Name=Value``. Read-only: the
+#: matching ``CMD_OPTIONS_WRQ`` is deliberately absent from this application,
+#: because writing an option has never been exercised on this device and one
+#: wrong value (an IP address, a threshold) is not recoverable remotely.
+CMD_OPTIONS_RRQ: Final = 11
+#: How much of an option reply to ask for. Every observed reply is far shorter;
+#: pyzk uses the same figure for its own option reads.
+OPTION_RESPONSE_BYTES: Final = 1024
 #: Register for real-time events (ZK ``CMD_REG_EVENT``).
 CMD_REG_EVENT: Final = 500
 #: Real-time event flag for attendance logs (ZK ``EF_ATTLOG``).

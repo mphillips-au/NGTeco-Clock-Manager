@@ -13,6 +13,7 @@ from clockmanager.protocol.constants import (
     ADMIN_PRIVILEGE,
     EMPLOYEE_PRIVILEGE,
     MB1_USER_RECORD_SIZE,
+    OPERATION_LOG_RECORD_SIZE,
 )
 
 __all__ = [
@@ -24,6 +25,8 @@ __all__ = [
     "build_fingerprint_entry",
     "build_fingerprint_payload",
     "build_live_event",
+    "build_operation_log_payload",
+    "build_operation_log_record",
     "build_user_payload",
     "build_user_record",
     "encode_zk_time",
@@ -206,5 +209,36 @@ def build_fingerprint_entry(
 def build_fingerprint_payload(entries: list[bytes], *, declared_size: int | None = None) -> bytes:
     """A buffered fingerprint read: 4-byte total size then the entries."""
     body = b"".join(entries)
+    size = len(body) if declared_size is None else declared_size
+    return pack("<I", size) + body
+
+
+def build_operation_log_record(
+    *,
+    operation: int = 5,
+    operator_uid: int = 1,
+    occurred_at: datetime | None = None,
+    parameters: tuple[int, int, int] = (0, 0, 0),
+    raw_time: bytes | None = None,
+) -> bytes:
+    """One 16-byte operation-log record.
+
+    ``raw_time`` overrides the packed timestamp, so a test can supply bytes
+    that do not decode to a plausible date and check the parser degrades to
+    "unreadable timestamp" instead of taking the whole log down.
+    """
+    if raw_time is None:
+        moment = occurred_at if occurred_at is not None else datetime(2026, 3, 1, 9, 0, 0)  # noqa: DTZ001
+        raw_time = encode_zk_time(moment)
+    record = (
+        pack("<BBH", operation, 0, operator_uid) + raw_time + pack("<HHH", *parameters) + bytes(2)
+    )
+    assert len(record) == OPERATION_LOG_RECORD_SIZE
+    return record
+
+
+def build_operation_log_payload(records: list[bytes], *, declared_size: int | None = None) -> bytes:
+    """A buffered operation-log read: 4-byte total size then the records."""
+    body = b"".join(records)
     size = len(body) if declared_size is None else declared_size
     return pack("<I", size) + body

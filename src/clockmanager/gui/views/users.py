@@ -10,8 +10,12 @@ disabled with an explanation when writing is switched off, rather than failing
 after the operator has filled in a form.
 
 The credential/PIN region is never displayed. The list shows only whether a
-credential is present, and labels it as an unverified indicator
-(``SECURITY.md``, ``PROTOCOL.md``).
+credential is present (``SECURITY.md``, ``PROTOCOL.md``).
+
+Fingerprint enrolments are shown the same way: a count of enrolled fingers,
+read by enumerating the device's fingerprint store. No template is read,
+displayed, exported or stored -- the protocol parser discards template bytes
+before they leave the protocol layer.
 """
 
 from __future__ import annotations
@@ -50,13 +54,21 @@ from clockmanager.gui.views.common import (
 )
 from clockmanager.gui.views.user_form import UserFormDialog
 from clockmanager.services.devices import DeviceProfile, DeviceService
-from clockmanager.services.users import DeleteImpact, UserService
+from clockmanager.services.users import DeleteImpact, EnrolledUser, UserService
 
 __all__ = ["UsersView"]
 
 _logger = get_logger(__name__)
 
-_HEADERS = ("UID", "User ID", "First name", "Last name", "Privilege", "PIN set")
+_HEADERS = (
+    "UID",
+    "User ID",
+    "First name",
+    "Last name",
+    "Privilege",
+    "PIN set",
+    "Fingerprints",
+)
 
 
 class UsersView(QWidget):
@@ -78,6 +90,10 @@ class UsersView(QWidget):
         self._role = normalise_role(role) if role is not None else None
         self._users: list[DeviceUser] = []
         self._visible: list[DeviceUser] = []
+        #: Enrolled finger count per device UID, from the last read. Empty
+        #: until the device has been read; a device that will not enumerate
+        #: fingerprints leaves it empty and the column says "Unknown".
+        self._enrolment: dict[int, EnrolledUser] = {}
 
         # Names take the spare width; identifiers and flags stay narrow.
         self._table = build_table(_HEADERS, self, stretch_columns=(2, 3))
@@ -108,6 +124,15 @@ class UsersView(QWidget):
         self._pin_only.setAccessibleName("Show only users with a PIN set")
         self._pin_only.toggled.connect(self._apply_filter)
 
+        self._no_credential = QCheckBox("Cannot clock in", self)
+        self._no_credential.setToolTip(
+            "Show only users with no PIN and no enrolled fingerprint. A face may "
+            "still be enrolled: the device reports a face count but gives no way "
+            "to attribute a face to a user, so this cannot account for faces."
+        )
+        self._no_credential.setAccessibleName("Show only users with no PIN and no fingerprint")
+        self._no_credential.toggled.connect(self._apply_filter)
+
         self._load_button = primary_button("Read users from device", self)
         self._load_button.clicked.connect(self.load)
         self._load_button.setShortcut("F5")
@@ -133,6 +158,7 @@ class UsersView(QWidget):
         controls.addWidget(self._filter, stretch=1)
         controls.addWidget(self._privilege)
         controls.addWidget(self._pin_only)
+        controls.addWidget(self._no_credential)
 
         actions = QHBoxLayout()
         actions.addWidget(self._add_button)
@@ -144,7 +170,8 @@ class UsersView(QWidget):
         layout.addWidget(
             page_header(
                 "Users",
-                "The people enrolled on the clock, their privilege and whether a PIN is set.",
+                "The people enrolled on the clock, their privilege, and how each "
+                "of them can identify themselves.",
             )
         )
         layout.addLayout(controls)
@@ -216,11 +243,11 @@ class UsersView(QWidget):
             on_failure=self._on_failure,
         )
 
-    def _read_users(self) -> list[DeviceUser] | None:
+    def _read_users(self) -> list[EnrolledUser] | None:
         profile = self._profile()
         if profile is None:
             return None
-        return self._users_service.list_users(profile)
+        return self._users_service.list_enrolment(profile)
 
     def _on_users_loaded(self, users: Any) -> None:
         self._load_button.setEnabled(True)
@@ -231,6 +258,7 @@ class UsersView(QWidget):
                 "warning",
             )
             self._users = []
+            self._enrolment = {}
             fill_table(
                 self._table,
                 [],
@@ -241,7 +269,8 @@ class UsersView(QWidget):
         if not isinstance(users, list):  # pragma: no cover - defensive
             return
 
-        self._users = users
+        self._enrolment = {entry.user.device_uid: entry for entry in users}
+        self._users = [entry.user for entry in users]
         self._apply_filter()
         self._refresh_write_availability()
 
@@ -249,11 +278,13 @@ class UsersView(QWidget):
         needle = self._filter.text().strip().lower()
         privilege = str(self._privilege.currentData() or "")
         pin_only = self._pin_only.isChecked()
+        no_credential = self._no_credential.isChecked()
         self._visible = [
             user
             for user in self._users
             if (not privilege or user.privilege_label == privilege)
             and (not pin_only or user.has_credential_data)
+            and (not no_credential or not self._can_identify(user))
             and (
                 not needle or needle in user.user_id.lower() or needle in user.display_name.lower()
             )
@@ -263,9 +294,10 @@ class UsersView(QWidget):
         else:
             admins = sum(1 for user in self._users if user.is_admin)
             summary = (
-                f"{len(self._users)} user(s) on the device, {admins} with Admin privilege. "
-                "“PIN set” indicates the device's credential region is populated; "
-                "its contents are never read."
+                f"{len(self._users)} user(s) on the device, {admins} with Admin privilege"
+                f"{self._enrolment_summary()}. “PIN set” indicates the device's "
+                "credential region is populated; neither a PIN nor a fingerprint "
+                "template is ever read."
             )
             if len(self._visible) != len(self._users):
                 summary += f" Showing {len(self._visible)} matching."
@@ -282,6 +314,7 @@ class UsersView(QWidget):
                     user.last_name,
                     user.privilege_label,
                     "Yes" if user.has_credential_data else "No",
+                    self._fingerprint_label(user),
                 ]
                 for user in self._visible
             ],
@@ -293,6 +326,34 @@ class UsersView(QWidget):
         )
         self._style_rows()
         self._update_buttons()
+
+    # -- enrolment ------------------------------------------------------------
+
+    def _fingerprint_label(self, user: DeviceUser) -> str:
+        """How many fingers this user has enrolled, or that it is not known.
+
+        "Unknown" and "None" are deliberately different words. A device that
+        would not enumerate its fingerprint store has told us nothing, and
+        showing that as "None" would say every user is unenrolled.
+        """
+        entry = self._enrolment.get(user.device_uid)
+        return entry.fingerprint_label if entry is not None else "Unknown"
+
+    def _can_identify(self, user: DeviceUser) -> bool:
+        entry = self._enrolment.get(user.device_uid)
+        return entry.can_identify if entry is not None else user.has_credential_data
+
+    def _enrolment_summary(self) -> str:
+        """A clause about fingerprint enrolment, or nothing when it is unknown."""
+        known = [entry for entry in self._enrolment.values() if entry.fingerprints_known]
+        if len(known) != len(self._users) or not self._users:
+            return ""
+        with_finger = sum(1 for entry in known if entry.fingerprint_count)
+        stranded = sum(1 for entry in known if not entry.can_identify)
+        clause = f", {with_finger} with a fingerprint enrolled"
+        if stranded:
+            clause += f", {stranded} with neither a PIN nor a fingerprint"
+        return clause
 
     def _style_rows(self) -> None:
         """Tint privilege and enrolment cells so admins and PIN state scan easily.
@@ -307,6 +368,9 @@ class UsersView(QWidget):
             enrolled = self._table.item(row, 5)
             if enrolled is not None and enrolled.text() == "Yes":
                 tint_cell(self._table, row, 5, "success")
+            fingers = self._table.item(row, 6)
+            if fingers is not None and fingers.text() not in ("None", "Unknown", ""):
+                tint_cell(self._table, row, 6, "success")
 
     # -- writes ---------------------------------------------------------------
 
