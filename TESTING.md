@@ -78,6 +78,16 @@ Corollaries for any real-device test:
 Use smoke tests and service-layer tests.
 Keep critical business logic outside widgets.
 
+## Device self-description (PHASE 15 wiring)
+
+`tests/unit/test_phase15_wiring.py` covers the four reads PHASE 15 proved,
+through parser, adapter, capability gate and service, against a fake pyzk
+transport and the mock device. It also pins the limits: no name outside the
+option allow-list is ever sent, no credential-shaped name is requested, no
+option-write method exists, a table-read payload is never previewed, and an
+unavailable section degrades to a note rather than an exception. "Unknown"
+and "None" enrolment are asserted to stay distinct.
+
 ## QA
 
 Before release test:

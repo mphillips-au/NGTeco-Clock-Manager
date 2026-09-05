@@ -17,13 +17,19 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from struct import unpack
 
-from clockmanager.domain.models import AttendanceEvent, DeviceUser, FingerprintSlot
+from clockmanager.domain.models import (
+    AttendanceEvent,
+    DeviceUser,
+    FingerprintSlot,
+    OperationLogEntry,
+)
 from clockmanager.protocol.constants import (
     ATTENDANCE_RECORD_SIZES,
     FINGERPRINT_ENTRY_HEADER_SIZE,
     MAX_DEVICE_YEAR,
     MB1_USER_RECORD_SIZE,
     MIN_DEVICE_YEAR,
+    OPERATION_LOG_RECORD_SIZE,
     SIZE_PREFIX_BYTES,
     USER_CREDENTIAL_SLICE,
     USER_FIRST_NAME_SLICE,
@@ -39,8 +45,10 @@ __all__ = [
     "decode_zk_time",
     "decode_zk_timehex",
     "parse_attendance_payload",
+    "parse_device_option_response",
     "parse_fingerprint_payload",
     "parse_live_event",
+    "parse_operation_log_payload",
     "parse_user_payload",
     "parse_user_record",
     "split_size_prefixed_payload",
@@ -422,3 +430,97 @@ def parse_fingerprint_payload(payload: bytes) -> list[FingerprintSlot]:
             "entry. Refusing to guess at an unrecognised layout."
         )
     return slots
+
+
+# -- device options -----------------------------------------------------------
+
+
+def parse_device_option_response(data: bytes, *, name: str) -> str:
+    """Extract the value from a ``CMD_OPTIONS_RRQ`` reply.
+
+    The device answers ``Name=Value``, NUL-terminated. Verified on the project
+    NG-MB1 (PHASE 15) across every option in
+    :mod:`clockmanager.protocol.options`.
+
+    The name the device echoes is checked against the name that was asked for.
+    Option reads are issued in a loop over one connection, and a reply that
+    belongs to the previous request -- which is what a desynchronised session
+    looks like -- would otherwise be shown as the wrong setting's value.
+    """
+    text = data.split(b"\x00")[0].decode("utf-8", errors="replace").strip()
+    if "=" not in text:
+        raise DeviceParseError(
+            f"Device answered option {name!r} with {text!r}, which is not in the "
+            "expected Name=Value form."
+        )
+    echoed, _, value = text.partition("=")
+    if echoed.strip() != name:
+        raise DeviceParseError(
+            f"Asked the device for option {name!r} and it answered for "
+            f"{echoed.strip()!r}. Refusing to report one option's value under "
+            "another's name."
+        )
+    return value.strip()
+
+
+# -- the device's own operation log -------------------------------------------
+
+
+def parse_operation_log_payload(payload: bytes) -> list[OperationLogEntry]:
+    """Parse the device's operation log into entries.
+
+    PROVEN on the project NG-MB1 (PHASE 15): a buffered ``CMD_DB_RRQ`` read
+    with ``FCT_OPLOG`` returned 528 bytes for 33 records, so records are 16
+    bytes, and bytes 4:8 hold a packed ZKTeco timestamp.
+
+    Everything else about the 16 bytes is INFERRED from the layout the ZKTeco
+    SDK family uses::
+
+        0    operation code       (unverified meaning)
+        1    reserved             (unverified)
+        2:4  operator UID, little-endian uint16
+        4:8  packed timestamp     <- PROVEN
+        8:14 three uint16 parameters (unverified meaning)
+        14:16 trailing            (unverified)
+
+    Accordingly the parser names none of the operation codes and reports them
+    as numbers. A record whose timestamp does not decode to a plausible date
+    keeps ``occurred_at=None`` instead of taking the whole log down: the log is
+    informational, and one unreadable row must not cost an operator the other
+    thirty-two.
+    """
+    if not payload:
+        return []
+
+    declared_size, body = split_size_prefixed_payload(payload, what="Operation log")
+    if 0 < declared_size <= len(body):
+        body = body[:declared_size]
+
+    remainder = len(body) % OPERATION_LOG_RECORD_SIZE
+    if remainder:
+        raise DeviceParseError(
+            f"Operation log is {len(body)} bytes, which is not a whole number of "
+            f"{OPERATION_LOG_RECORD_SIZE}-byte records. Refusing to guess at an "
+            "unrecognised layout."
+        )
+
+    entries: list[OperationLogEntry] = []
+    for index in range(len(body) // OPERATION_LOG_RECORD_SIZE):
+        offset = index * OPERATION_LOG_RECORD_SIZE
+        record = body[offset : offset + OPERATION_LOG_RECORD_SIZE]
+        operation, _reserved, operator_uid = unpack("<BBH", record[:4])
+        try:
+            occurred_at: datetime | None = decode_zk_time(record[4:8])
+        except DeviceParseError:
+            occurred_at = None
+        first, second, third = unpack("<HHH", record[8:14])
+        entries.append(
+            OperationLogEntry(
+                index=index,
+                operation=int(operation),
+                operator_uid=int(operator_uid),
+                occurred_at=occurred_at,
+                parameters=(int(first), int(second), int(third)),
+            )
+        )
+    return entries

@@ -21,7 +21,15 @@ from typing import Any, Protocol
 
 from clockmanager.diagnostics.logging_setup import get_logger
 from clockmanager.domain.auth import Permission, Role, require
-from clockmanager.domain.models import AttendanceEvent, DeviceInfo, DeviceUser
+from clockmanager.domain.models import (
+    AttendanceEvent,
+    DeviceInfo,
+    DeviceOption,
+    DeviceStorage,
+    DeviceUser,
+    FingerprintSlot,
+    OperationLogEntry,
+)
 from clockmanager.errors import ClockManagerError
 from clockmanager.persistence.database import Database
 from clockmanager.persistence.models import DeviceRecord, utc_now
@@ -30,7 +38,7 @@ from clockmanager.persistence.repositories import (
     DeviceRepository,
     SyncHistoryRepository,
 )
-from clockmanager.protocol.capabilities import DeviceCapabilities
+from clockmanager.protocol.capabilities import Capability, DeviceCapabilities
 from clockmanager.protocol.constants import DEFAULT_PORT as _PROTOCOL_DEFAULT_PORT
 from clockmanager.protocol.discovery import (
     DiscoveredDevice,
@@ -40,7 +48,11 @@ from clockmanager.protocol.discovery import (
     scan_hosts,
 )
 from clockmanager.protocol.errors import DeviceError
-from clockmanager.protocol.interface import AttendanceDevice, DeviceConnectionSettings
+from clockmanager.protocol.interface import (
+    AttendanceDevice,
+    DeviceConnectionSettings,
+    InspectableDevice,
+)
 from clockmanager.protocol.mb1 import NGTecoMB1Device
 from clockmanager.protocol.mock import MockAttendanceDevice, MockDeviceScript
 from clockmanager.protocol.trace import RecordingTransport, TraceRecorder
@@ -49,6 +61,7 @@ __all__ = [
     "DEFAULT_DEVICE_PORT",
     "ConnectionTestResult",
     "DeviceFactory",
+    "DeviceInspection",
     "DeviceProfile",
     "DeviceService",
     "DeviceStatus",
@@ -190,6 +203,55 @@ class ConnectionTestResult:
 
 
 @dataclass(frozen=True, slots=True)
+class DeviceInspection:
+    """Everything the device can say about itself, read in one connection.
+
+    Assembled section by section, and a section that fails is recorded as a
+    note rather than taking the whole inspection down: an operator asking
+    "what is this clock and how full is it" should still get the firmware and
+    the capacities when, say, the operation log will not read.
+
+    Contains no credential, no PIN and no biometric template. The fingerprint
+    section carries slot metadata only, which is all the protocol layer will
+    return.
+    """
+
+    profile_name: str
+    endpoint: str
+    ok: bool
+    info: DeviceInfo | None = None
+    storage: DeviceStorage | None = None
+    options: tuple[DeviceOption, ...] = ()
+    fingerprints: tuple[FingerprintSlot, ...] = ()
+    operation_log: tuple[OperationLogEntry, ...] = ()
+    #: One line per section that could not be read, in the order attempted.
+    notes: tuple[str, ...] = ()
+    error: str = ""
+
+    @property
+    def summary(self) -> str:
+        if not self.ok:
+            return f"Could not read {self.profile_name}: {self.error}"
+        answered = sum(1 for option in self.options if option.answered)
+        parts = [
+            f"{answered} of {len(self.options)} settings answered",
+            f"{len(self.fingerprints)} fingerprint(s) enrolled",
+            f"{len(self.operation_log)} operation-log entries",
+        ]
+        line = f"Read {self.profile_name}: " + ", ".join(parts) + "."
+        if self.notes:
+            line += f" {len(self.notes)} section(s) unavailable."
+        return line
+
+    def option_rows(self) -> list[tuple[str, str, str, str]]:
+        """Group/label/value/note rows for display."""
+        return [
+            (option.group, option.label, option.display_value, option.note)
+            for option in self.options
+        ]
+
+
+@dataclass(frozen=True, slots=True)
 class DeviceStatus:
     """Locally known state for one stored device (PHASE 08).
 
@@ -275,12 +337,24 @@ class MockDeviceFactory:
 
     def _build(self, profile: DeviceProfile) -> MockAttendanceDevice:
         from clockmanager.protocol.records import parse_user_payload
-        from clockmanager.services.sample_data import sample_attendance, sample_user_payload
+        from clockmanager.services.sample_data import (
+            sample_attendance,
+            sample_fingerprints,
+            sample_operation_log,
+            sample_user_payload,
+        )
 
         users = parse_user_payload(sample_user_payload())
         return MockAttendanceDevice(
             settings=profile.to_connection_settings() if profile.is_configured else None,
-            script=MockDeviceScript(users=users, attendance=sample_attendance(users)),
+            script=MockDeviceScript(
+                users=users,
+                attendance=sample_attendance(users),
+                # Seeded so the enrolment column, the fingerprint list and the
+                # device log are all visible without hardware. Metadata only.
+                fingerprints=sample_fingerprints(),
+                operation_log=sample_operation_log(),
+            ),
         )
 
 
@@ -673,6 +747,133 @@ class DeviceService:
         with self._connected(profile) as device:
             return device.get_attendance()
 
+    # -- self-description (PHASE 15) ------------------------------------------
+
+    def inspect(self, profile: DeviceProfile) -> DeviceInspection:
+        """Read everything the device can say about itself, in one connection.
+
+        Read-only from end to end: identity, settings, capacities, fingerprint
+        enrolments and the device's own operation log. Nothing here writes,
+        clears or reconfigures anything.
+
+        A failure of the connection itself is returned as a failed inspection,
+        because the GUI shows it rather than raising it. A failure of one
+        section is a note and the rest of the inspection still arrives.
+        """
+        notes: list[str] = []
+        try:
+            device = self._device_factory(profile)
+        except ClockManagerError as exc:
+            return DeviceInspection(
+                profile_name=profile.name,
+                endpoint=profile.endpoint,
+                ok=False,
+                error=str(exc),
+            )
+
+        try:
+            info = device.connect()
+        except DeviceError as exc:
+            _logger.warning(
+                "Device inspection could not connect",
+                extra={"device": profile.name, "endpoint": profile.endpoint},
+            )
+            return DeviceInspection(
+                profile_name=profile.name,
+                endpoint=profile.endpoint,
+                ok=False,
+                error=str(exc),
+            )
+
+        try:
+            self.record_identity(profile, info)
+            self.mark_seen(profile)
+            storage = self._section(
+                device, Capability.READ_STORAGE, "read_storage", "Capacity", notes
+            )
+            options = self._section(
+                device, Capability.READ_DEVICE_OPTIONS, "read_device_options", "Settings", notes
+            )
+            fingerprints = self._section(
+                device,
+                Capability.READ_FINGERPRINT,
+                "read_fingerprint_slots",
+                "Fingerprint enrolments",
+                notes,
+            )
+            operation_log = self._section(
+                device,
+                Capability.READ_OPERATION_LOG,
+                "read_operation_log",
+                "Device operation log",
+                notes,
+            )
+        finally:
+            device.disconnect()
+
+        _logger.info(
+            "Inspected device",
+            extra={"device": profile.name, "unavailable_sections": len(notes)},
+        )
+        return DeviceInspection(
+            profile_name=profile.name,
+            endpoint=profile.endpoint,
+            ok=True,
+            info=info if storage is None else replace(info, storage=storage),
+            storage=storage if storage is not None else info.storage,
+            options=tuple(options or ()),
+            fingerprints=tuple(fingerprints or ()),
+            operation_log=tuple(operation_log or ()),
+            notes=tuple(notes),
+        )
+
+    @staticmethod
+    def _section(
+        device: AttendanceDevice,
+        capability: Capability,
+        method: str,
+        label: str,
+        notes: list[str],
+    ) -> Any:
+        """Read one section, recording why it is missing instead of failing.
+
+        A device implementation that does not offer the method at all, one
+        whose capability set withholds it, and one that answers with an error
+        are three different things, and the note says which.
+        """
+        if not isinstance(device, InspectableDevice) or not hasattr(device, method):
+            notes.append(f"{label}: not available from this device implementation.")
+            return None
+        state = device.capabilities.state(capability)
+        if not state.usable:
+            notes.append(f"{label}: {state.support.value} — {state.reason}")
+            return None
+        try:
+            return getattr(device, method)()
+        except (DeviceError, ValueError) as exc:
+            notes.append(f"{label}: could not be read — {exc}")
+            return None
+
+    def read_device_options(self, profile: DeviceProfile) -> list[DeviceOption]:
+        """Read the device's allow-listed settings. Read-only."""
+        with self._connected(profile) as device:
+            return _inspectable(device, profile).read_device_options()
+
+    def read_storage(self, profile: DeviceProfile) -> DeviceStorage:
+        """Read the device's capacity and usage counters."""
+        with self._connected(profile) as device:
+            return _inspectable(device, profile).read_storage()
+
+    def read_fingerprint_slots(self, profile: DeviceProfile) -> list[FingerprintSlot]:
+        """Enumerate enrolled fingerprints. Returns metadata, never a template."""
+        with self._connected(profile) as device:
+            return _inspectable(device, profile).read_fingerprint_slots()
+
+    def read_operation_log(self, profile: DeviceProfile) -> list[OperationLogEntry]:
+        """Read the device's own record of what was done at the keypad."""
+        with self._connected(profile) as device:
+            return _inspectable(device, profile).read_operation_log()
+
     def open_device(self, profile: DeviceProfile) -> AttendanceDevice:
         """Return a connected device for a long-running operation.
 
@@ -689,6 +890,16 @@ class DeviceService:
 
     #: Retained for the existing read helpers in this module.
     _connected = connected
+
+
+def _inspectable(device: AttendanceDevice, profile: DeviceProfile) -> InspectableDevice:
+    """Narrow a device to the self-description interface, or say why not."""
+    if not isinstance(device, InspectableDevice):
+        raise ClockManagerError(
+            f"The adapter for {profile.name!r} cannot describe itself: it does not "
+            "implement the device inspection interface."
+        )
+    return device
 
 
 class _ConnectedDevice:

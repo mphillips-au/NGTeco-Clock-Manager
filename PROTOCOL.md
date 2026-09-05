@@ -462,6 +462,14 @@ before/after, and diff — implement nothing until the offset survives that.
 
 ## Fingerprint enumeration (PHASE 15, PROVEN)
 
+Enumeration is wired through to the Users screen: the user list shows how many
+fingers each person has enrolled, matched to the user record by device UID, and
+Settings ▸ Device settings ▸ Device information ▸ Fingerprints lists the slots.
+"Unknown" (the device would not enumerate) and "None" (it did, and this person
+has none) are different words on that screen and are never conflated. No
+template byte leaves `parse_fingerprint_payload`.
+
+
 The fingerprint store can be **enumerated** on the real NG-MB1. Reading,
 writing or enrolling a template still cannot.
 
@@ -493,8 +501,23 @@ a read: it needs no write unlock.
 ## Device options (PHASE 15, PROVEN, read-only)
 
 `CMD_OPTIONS_RRQ` (11) with a NUL-terminated option name returns `Name=Value`.
-An unsupported name returns code 4999 harmlessly. The application uses none of
-this today.
+An unsupported name returns code 4999 harmlessly.
+
+**Implemented** (PHASE 15 wiring): `NGTecoMB1Device.read_device_options()`,
+surfaced on Settings ▸ Device settings ▸ Device information and in the
+diagnostics trace and export.
+
+Two rules constrain it, both enforced in code:
+
+* The names it will ask for are a **fixed allow-list**
+  (`clockmanager.protocol.options.NG_MB1_OPTIONS`). A caller cannot request an
+  arbitrary name, and a name matching a credential-shaped fragment (`key`,
+  `password`, `pwd`, `secret`, `token`, `comkey`) is refused before a request
+  is built, so `ComKey` can never be read into a panel, an export or a log.
+* There is **no option write** anywhere in the application.
+  `Capability.WRITE_DEVICE_OPTIONS` is UNSUPPORTED and, being unsupported,
+  cannot be operator-unlocked. `CMD_OPTIONS_WRQ` is not even defined as a
+  constant.
 
 Confirmed answering on this device: `~SerialNumber`, `~DeviceName`,
 `~Platform`, `~ProductTime` (2026-01-31 12:18:57), `~OS`, `~PIN2Width` (9),
@@ -532,17 +555,37 @@ sync engine already assumes.
 | --- | --- |
 | `FCT_ATTLOG` (1) | 244 bytes, identical to `CMD_ATTLOG_RRQ` |
 | `FCT_FINGERTMP` (2) | 1682 bytes, 2 entries -- implemented |
-| `FCT_OPLOG` (4) | **528 bytes = 33 records of 16 bytes** -- not decoded |
+| `FCT_OPLOG` (4) | **528 bytes = 33 records of 16 bytes** -- decoded, PHASE 15 wiring |
 | `FCT_SMS` (6) | empty (4-byte payload) |
 | `FCT_UDATA` (7) | empty |
 | `FCT_WORKCODE` (8) | empty; `WorkCode=0` |
 
-**The device keeps its own operation log**, readable and currently unused. 33
-records, and `read_sizes()` `fields[10]` (pyzk's `dummy`) also reads 33 --
-almost certainly the oplog count. Each record has a packed ZK timestamp at
-bytes 4:8. Decoding it would show keypad-side activity -- enrolments,
-deletions, admin menu access -- which the application cannot currently see at
-all.
+**The device keeps its own operation log.** 33 records, and `read_sizes()`
+`fields[10]` (pyzk's `dummy`) also reads 33 -- almost certainly the oplog
+count. It shows keypad-side activity, which is a different question from the
+application's audit trail: the audit trail records what this application did,
+the oplog records what somebody standing at the clock did.
+
+`NGTecoMB1Device.read_operation_log()` reads it, and Settings ▸ Device settings
+▸ Device information ▸ Device log shows it.
+
+What is PROVEN about a record is the 16-byte size and the packed ZK timestamp
+at bytes 4:8. The rest is INFERRED from the ZKTeco SDK family layout:
+
+```text
+  0     operation code        (meaning UNVERIFIED)
+  1     reserved              (UNVERIFIED)
+  2:4   operator UID, LE uint16
+  4:8   packed ZK timestamp   <- PROVEN
+  8:14  three LE uint16 parameters (meaning UNVERIFIED)
+ 14:16  trailing              (UNVERIFIED)
+```
+
+Accordingly `parse_operation_log_payload` names no operation code: entries
+display as "Operation 5", never as an invented label. A record whose timestamp
+does not decode inside the plausible year range keeps `occurred_at=None` and
+displays as "Unreadable timestamp", so a misread layout shows itself instead of
+costing an operator the other thirty-two records.
 
 ## read_sizes() (PHASE 15)
 
@@ -553,10 +596,12 @@ With two users enrolled: `users=2 fingers=2 records=6 dummy=33 cards=2
 fingers_cap=400 users_cap=200 rec_cap=30000 fingers_av=398 users_av=198
 rec_av=29994 faces=2 faces_cap=200`.
 
-Capacities and availability are reliable and worth surfacing. **`cards` is
-not**: it is pyzk's guess at an unlabelled field, and it did not change when a
-third user was added, so it does not track users and nothing establishes what
-it counts.
+Capacities and availability are reliable and are surfaced (PHASE 15 wiring):
+`NGTecoMB1Device.read_storage()`, and `DeviceInfo.storage`, which makes every
+existing snapshot read "6 of 30,000 used — 29,994 free" instead of "6". **`cards`
+is deliberately NOT surfaced**: it is pyzk's guess at an unlabelled field, and
+it did not change when a third user was added, so it does not track users and
+nothing establishes what it counts. `DeviceStorage` has no field for it.
 
 ## Live events (PHASE 15, still UNDETERMINED)
 

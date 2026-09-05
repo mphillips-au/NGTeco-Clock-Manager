@@ -17,13 +17,23 @@ without hardware. Writes are refused unless the mock is built with
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from types import TracebackType
 from typing import Self
 
-from clockmanager.domain.models import AttendanceEvent, DeviceIdentity, DeviceInfo, DeviceUser
+from clockmanager.domain.models import (
+    AttendanceEvent,
+    DeviceIdentity,
+    DeviceInfo,
+    DeviceOption,
+    DeviceStorage,
+    DeviceUser,
+    FingerprintSlot,
+    OperationLogEntry,
+    StorageCounter,
+)
 from clockmanager.domain.users import (
     CredentialAction,
     UserDraft,
@@ -47,6 +57,7 @@ from clockmanager.protocol.errors import (
     DeviceWriteError,
 )
 from clockmanager.protocol.interface import DeviceConnectionSettings
+from clockmanager.protocol.options import option_specs
 from clockmanager.protocol.records import parse_user_record
 
 __all__ = ["MockAttendanceDevice", "MockDeviceScript", "sample_settings"]
@@ -115,6 +126,43 @@ def sample_settings(name: str = "Mock clock") -> DeviceConnectionSettings:
     return DeviceConnectionSettings(name=name, host="192.0.2.10", timeout_seconds=1.0)
 
 
+#: What the mock answers option reads with. Synthetic throughout: the address
+#: is in the RFC 5737 documentation range and the serial number is obviously
+#: fake, so a screenshot or a test fixture can never be mistaken for a real
+#: device's configuration. Names absent here are refused, which is how a real
+#: device answers an option it does not have.
+DEFAULT_MOCK_OPTIONS: dict[str, str] = {
+    "~DeviceName": "Mock NG-MB1",
+    "~SerialNumber": "MOCK-0000000001",
+    "~Platform": "ZMM510_TFT",
+    "~ProductTime": "2026-01-31 12:18:57",
+    "DeviceID": "1",
+    "MAC": "00:00:5e:00:53:01",
+    "IPAddress": "192.0.2.201",
+    "NetMask": "255.255.255.0",
+    "GATEIPAddress": "0.0.0.0",
+    "~PIN2Width": "9",
+    "~UserExtFmt": "1",
+    "~ZKFPVersion": "10",
+    "ZKFaceVersion": "35",
+    "FingerFunOn": "1",
+    "FaceFunOn": "1",
+    "MThreshold": "35",
+    "VThreshold": "15",
+    "~MaxUserPhotoCount": "200",
+    "WorkCode": "0",
+    "MustEnroll": "0",
+    "VOLUME": "70",
+    "Language": "69",
+    "IdleMinute": "30",
+    "LockOn": "10",
+    "CompatOldFirmware": "0",
+    "~IsOnlyRFMachine": "0",
+    "~SSR": "1",
+    "RS232BaudRate": "115200",
+}
+
+
 @dataclass
 class MockDeviceScript:
     """Controls how the mock device behaves, including how it fails."""
@@ -151,6 +199,24 @@ class MockDeviceScript:
     #: When set, the mock stores this record instead of the one it was sent,
     #: so read-back comparison failure can be tested.
     corrupt_next_write: bool = False
+
+    #: Option values the mock answers with, keyed by option name. Every value
+    #: is synthetic: the mock must never carry a real serial number, MAC
+    #: address or network configuration. A name absent from this mapping is
+    #: answered the way a real device answers an option its firmware does not
+    #: have -- refused, and reported as unavailable.
+    options: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_MOCK_OPTIONS))
+    #: Capacities the mock reports. Usage figures are taken from the seeded
+    #: users, attendance and fingerprints, so the two never disagree.
+    user_capacity: int = 200
+    fingerprint_capacity: int = 400
+    attendance_capacity: int = 30000
+    face_capacity: int = 200
+    #: Fingerprint enrolments, as metadata only. ``template_bytes`` is a
+    #: length; the mock holds no template, real or synthetic.
+    fingerprints: list[FingerprintSlot] = field(default_factory=list)
+    #: The device's own operation log.
+    operation_log: list[OperationLogEntry] = field(default_factory=list)
 
 
 class MockAttendanceDevice:
@@ -253,14 +319,62 @@ class MockAttendanceDevice:
 
     def get_device_info(self) -> DeviceInfo:
         self.capabilities.require(Capability.DEVICE_INFO)
+        storage = self._storage()
         return DeviceInfo(
             identity=self._script.identity,
             device_time=self._script.device_time,
-            user_count=len(self._script.users),
-            attendance_count=len(self._script.attendance),
-            fingerprint_count=0,
+            user_count=storage.users.used,
+            attendance_count=storage.attendance.used,
+            fingerprint_count=storage.fingerprints.used,
             face_count=0,
+            storage=storage,
         )
+
+    def _storage(self) -> DeviceStorage:
+        """Capacity and usage, with usage derived from what the mock holds."""
+        script = self._script
+        return DeviceStorage(
+            users=StorageCounter("Users", len(self._records), script.user_capacity),
+            fingerprints=StorageCounter(
+                "Fingerprints", len(script.fingerprints), script.fingerprint_capacity
+            ),
+            attendance=StorageCounter(
+                "Attendance records", len(script.attendance), script.attendance_capacity
+            ),
+            faces=StorageCounter("Faces", 0, script.face_capacity),
+            operation_log_records=len(script.operation_log),
+        )
+
+    def read_storage(self) -> DeviceStorage:
+        self.capabilities.require(Capability.READ_STORAGE)
+        self._guard()
+        return self._storage()
+
+    def read_device_options(self, names: Sequence[str] | None = None) -> list[DeviceOption]:
+        """Answer option reads from the script, refusing names it does not hold."""
+        self.capabilities.require(Capability.READ_DEVICE_OPTIONS)
+        self._guard()
+        return [
+            DeviceOption(
+                name=spec.name,
+                label=spec.label,
+                group=spec.group,
+                value=self._script.options.get(spec.name),
+                note=spec.note,
+            )
+            for spec in option_specs(list(names) if names is not None else None)
+        ]
+
+    def read_fingerprint_slots(self) -> list[FingerprintSlot]:
+        """Enumerate the scripted fingerprint slots. Holds no template."""
+        self.capabilities.require(Capability.READ_FINGERPRINT)
+        self._guard()
+        return list(self._script.fingerprints)
+
+    def read_operation_log(self) -> list[OperationLogEntry]:
+        self.capabilities.require(Capability.READ_OPERATION_LOG)
+        self._guard()
+        return list(self._script.operation_log)
 
     def get_device_time(self) -> datetime:
         self.capabilities.require(Capability.READ_TIME)

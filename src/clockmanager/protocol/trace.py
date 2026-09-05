@@ -29,7 +29,11 @@ from clockmanager.protocol.constants import (
     SIZE_PREFIX_BYTES,
     USER_CREDENTIAL_SLICE,
 )
-from clockmanager.protocol.errors import DeviceCapabilityError, DeviceError
+from clockmanager.protocol.errors import (
+    DeviceCapabilityError,
+    DeviceError,
+    DeviceProtocolError,
+)
 from clockmanager.protocol.records import (
     parse_attendance_payload,
     parse_user_record,
@@ -238,6 +242,24 @@ class RecordingTransport:
     def __getattr__(self, name: str) -> Any:
         return getattr(self._wrapped, name)
 
+    def _wrapped_send_command(self) -> Any:
+        """The wrapped transport's command sender, public or name-mangled.
+
+        ``pyzk`` only exposes ``__send_command``, so the mangled name is what a
+        real transport actually has; the public name is what a fake in the test
+        suite is likely to offer. Looking for both is what lets the device
+        options read -- which is a plain command rather than a buffered read --
+        be traced instead of bypassing the recorder.
+        """
+        for name in ("send_command", "_ZK__send_command"):
+            sender = getattr(self._wrapped, name, None)
+            if sender is not None:
+                return sender
+        raise DeviceProtocolError(
+            "The wrapped transport exposes no command sender, public or "
+            "name-mangled. Pin pyzk or update the recording transport."
+        )
+
     def send_command(
         self, command: int, data: bytes = b"", receive_size: int = 1024
     ) -> dict[str, Any]:
@@ -250,7 +272,7 @@ class RecordingTransport:
             detail=f"payload {payload_note}, expecting up to {receive_size} B",
             bytes_count=len(data) or None,
         ):
-            response: dict[str, Any] = self._wrapped.send_command(command, data, receive_size)
+            response: dict[str, Any] = self._wrapped_send_command()(command, data, receive_size)
         self._recorder.record(
             "transport",
             "RX",

@@ -31,7 +31,7 @@ must not be added.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime
 from struct import pack, unpack
 from types import TracebackType
@@ -45,8 +45,12 @@ from clockmanager.domain.models import (
     AttendanceEvent,
     DeviceIdentity,
     DeviceInfo,
+    DeviceOption,
+    DeviceStorage,
     DeviceUser,
     FingerprintSlot,
+    OperationLogEntry,
+    StorageCounter,
 )
 from clockmanager.domain.users import (
     UserDraft,
@@ -68,16 +72,19 @@ from clockmanager.protocol.constants import (
     CMD_ATTLOG_RRQ,
     CMD_DB_RRQ,
     CMD_DELETE_USER,
+    CMD_OPTIONS_RRQ,
     CMD_REFRESHDATA,
     CMD_REG_EVENT,
     CMD_USER_WRQ,
     CMD_USERTEMP_RRQ,
     EF_ATTLOG,
     FCT_FINGERTMP,
+    FCT_OPLOG,
     FCT_USER,
     LIVE_EVENT_BUFFER_BYTES,
     MAX_USER_UID,
     MB1_USER_RECORD_SIZE,
+    OPTION_RESPONSE_BYTES,
     USER_CREDENTIAL_SLICE,
 )
 from clockmanager.protocol.errors import (
@@ -90,10 +97,17 @@ from clockmanager.protocol.errors import (
     DeviceWriteError,
 )
 from clockmanager.protocol.interface import DeviceConnectionSettings
+from clockmanager.protocol.options import (
+    DeviceOptionSpec,
+    is_sensitive_option_name,
+    option_specs,
+)
 from clockmanager.protocol.records import (
     parse_attendance_payload,
+    parse_device_option_response,
     parse_fingerprint_payload,
     parse_live_event,
+    parse_operation_log_payload,
     parse_user_payload,
     parse_user_record,
 )
@@ -328,6 +342,7 @@ class NGTecoMB1Device:
                 attendance_count=_as_count(getattr(transport, "records", None)),
                 fingerprint_count=_as_count(getattr(transport, "fingers", None)),
                 face_count=_as_count(getattr(transport, "faces", None)),
+                storage=_storage_from_transport(transport),
             )
 
         info: DeviceInfo = self._call(_read, description="Reading device info")
@@ -405,6 +420,115 @@ class NGTecoMB1Device:
             extra={"device": self._settings.name, "slot_count": len(slots)},
         )
         return slots
+
+    def read_storage(self) -> DeviceStorage:
+        """Read what the device reports about its own capacity and usage.
+
+        ``CMD_GET_FREE_SIZES`` was already being called for the record counts;
+        this reads the rest of the same response. Capacities are what turn a
+        count into something an operator can act on -- "6 of 30000 records
+        used" answers a question that "6 records" does not.
+
+        The response field ``pyzk`` labels ``cards`` is deliberately not
+        surfaced. PHASE 15 found it did not change when a user was added and
+        nothing establishes what it counts, so it is omitted rather than shown
+        under a name that may be wrong.
+        """
+        self.capabilities.require(Capability.READ_STORAGE)
+        storage: DeviceStorage = self._call(
+            _storage_from_transport, description="Reading device storage"
+        )
+        return storage
+
+    def read_device_options(self, names: Sequence[str] | None = None) -> list[DeviceOption]:
+        """Read named settings from the device. Read-only, and allow-listed.
+
+        Each option is one ``CMD_OPTIONS_RRQ`` round trip carrying a
+        NUL-terminated name; the device answers ``Name=Value`` (PHASE 15). A
+        name the firmware does not have is refused with code 4999, which is
+        harmless and is reported as :attr:`DeviceOption.answered` being false
+        rather than raised -- "this model has no work codes" is a useful answer.
+
+        ``names`` selects a subset of :data:`NG_MB1_OPTIONS`; a name outside
+        that catalogue is not read. The allow-list is what stops this becoming
+        a way to fish for arbitrary named values, and a name that could carry a
+        credential is refused outright (``SECURITY.md``).
+
+        There is no counterpart that writes an option, deliberately.
+        """
+        self.capabilities.require(Capability.READ_DEVICE_OPTIONS)
+        specs = option_specs(list(names) if names is not None else None)
+        for spec in specs:
+            if is_sensitive_option_name(spec.name):  # pragma: no cover - guarded catalogue
+                raise DeviceValidationError(
+                    f"Option {spec.name!r} could carry a credential and is never read."
+                )
+
+        def _read(transport: Any) -> list[DeviceOption]:
+            return [self._read_one_option(transport, spec) for spec in specs]
+
+        options: list[DeviceOption] = self._call(_read, description="Reading device options")
+        _logger.info(
+            "Read device options",
+            extra={
+                "device": self._settings.name,
+                "requested": len(specs),
+                "answered": sum(1 for option in options if option.answered),
+            },
+        )
+        return options
+
+    def _read_one_option(self, transport: Any, spec: DeviceOptionSpec) -> DeviceOption:
+        """Ask for one option, treating a refusal as an answer, not a failure."""
+        sender = getattr(transport, "send_command", None)
+        if sender is None:
+            sender = _private(transport, "send_command")
+        response = sender(
+            CMD_OPTIONS_RRQ, spec.name.encode("ascii") + b"\x00", OPTION_RESPONSE_BYTES
+        )
+        if not response.get("status"):
+            _logger.debug(
+                "Device does not support option",
+                extra={"device": self._settings.name, "option": spec.name},
+            )
+            return DeviceOption(name=spec.name, label=spec.label, group=spec.group, note=spec.note)
+        data = _private(transport, "data")
+        return DeviceOption(
+            name=spec.name,
+            label=spec.label,
+            group=spec.group,
+            value=parse_device_option_response(bytes(data), name=spec.name),
+            note=spec.note,
+        )
+
+    def read_operation_log(self) -> list[OperationLogEntry]:
+        """Read the device's own record of what was done at the keypad.
+
+        This is not the application's audit trail and does not overlap with it.
+        The audit trail records what this application did; the device records
+        enrolments, deletions and administrator menu access performed by
+        somebody standing at the clock, and nothing here could see them before.
+
+        The read is proven on the real NG-MB1 (PHASE 15); within a record only
+        the timestamp is, so
+        :func:`~clockmanager.protocol.records.parse_operation_log_payload`
+        reports operation codes as numbers rather than naming them. Read-only:
+        the log is never cleared from here.
+        """
+        self.capabilities.require(Capability.READ_OPERATION_LOG)
+
+        def _read(transport: Any) -> list[OperationLogEntry]:
+            payload, _size = transport.read_with_buffer(CMD_DB_RRQ, FCT_OPLOG)
+            return parse_operation_log_payload(payload)
+
+        entries: list[OperationLogEntry] = self._call(
+            _read, description="Reading device operation log"
+        )
+        _logger.info(
+            "Read device operation log",
+            extra={"device": self._settings.name, "entry_count": len(entries)},
+        )
+        return entries
 
     # -- writes ---------------------------------------------------------------
 
@@ -800,6 +924,35 @@ def _live_chunk_size(remaining: int) -> int | None:
     if remaining >= 52:
         return 52
     return None
+
+
+def _storage_from_transport(transport: Any) -> DeviceStorage:
+    """Build a :class:`DeviceStorage` from a ``read_sizes()`` response.
+
+    ``pyzk`` parses the response onto its own attributes and leaves them unset
+    when the device did not send them, so every field here is read through
+    :func:`_as_count`, which preserves "not reported" as ``None``.
+    """
+    transport.read_sizes()
+
+    def _count(name: str) -> int | None:
+        return _as_count(getattr(transport, name, None))
+
+    return DeviceStorage(
+        users=StorageCounter("Users", _count("users"), _count("users_cap"), _count("users_av")),
+        fingerprints=StorageCounter(
+            "Fingerprints", _count("fingers"), _count("fingers_cap"), _count("fingers_av")
+        ),
+        attendance=StorageCounter(
+            "Attendance records", _count("records"), _count("rec_cap"), _count("rec_av")
+        ),
+        faces=StorageCounter("Faces", _count("faces"), _count("faces_cap")),
+        # pyzk calls this field "dummy". PHASE 15 found it equal to the number
+        # of operation-log records the device actually returned (33 on the
+        # project device), which is the only meaning anything establishes for
+        # it, and it is reported under that name or not at all.
+        operation_log_records=_count("dummy"),
+    )
 
 
 def _first_free_uid(taken: set[int]) -> int:

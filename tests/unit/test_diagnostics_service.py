@@ -213,7 +213,7 @@ class TestCapabilityReport:
     ) -> None:
         report = context.diagnostics.capability_report(profile)
         assert report.profile_name == "Bench clock"
-        assert len(report.rows) == 14
+        assert len(report.rows) == len(Capability)
         by_name = {name: support for name, support, _ in report.rows}
         assert by_name["connect"] == "supported"
         assert by_name["clear_attendance"] == "unsupported"

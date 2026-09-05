@@ -22,7 +22,7 @@ from dataclasses import dataclass
 
 from clockmanager.diagnostics.logging_setup import get_logger
 from clockmanager.domain.auth import Permission, Role, require
-from clockmanager.domain.models import DeviceUser
+from clockmanager.domain.models import DeviceUser, FingerprintSlot
 from clockmanager.domain.users import (
     CredentialAction,
     UserDraft,
@@ -32,11 +32,17 @@ from clockmanager.domain.users import (
 from clockmanager.errors import ClockManagerError
 from clockmanager.protocol.capabilities import Capability
 from clockmanager.protocol.errors import DeviceCapabilityError, DeviceError
-from clockmanager.protocol.interface import WritableUserDevice
+from clockmanager.protocol.interface import InspectableDevice, WritableUserDevice
 from clockmanager.services.audit import AuditAction, AuditOutcome, AuditService
 from clockmanager.services.devices import DeviceProfile, DeviceService
 
-__all__ = ["CredentialAction", "DeleteImpact", "UserService", "WriteAvailability"]
+__all__ = [
+    "CredentialAction",
+    "DeleteImpact",
+    "EnrolledUser",
+    "UserService",
+    "WriteAvailability",
+]
 
 _logger = get_logger(__name__)
 
@@ -102,6 +108,50 @@ class DeleteImpact:
         ]
 
 
+@dataclass(frozen=True, slots=True)
+class EnrolledUser:
+    """A device user together with how they can actually identify themselves.
+
+    "Can this person clock in, and how?" is an ordinary operational question
+    that the user list could not answer before: it showed a PIN indicator and
+    nothing about biometrics. Fingerprint enrolments can be enumerated on the
+    real NG-MB1 (PHASE 15), so they are shown here.
+
+    ``fingers`` holds finger indexes only. No template byte reaches this type,
+    or any other outside the protocol parser (``SECURITY.md``).
+
+    ``fingerprints_known`` is false when the device would not enumerate them.
+    That is different from "this person has none", and the two are never shown
+    the same way.
+    """
+
+    user: DeviceUser
+    fingers: tuple[int, ...] = ()
+    fingerprints_known: bool = True
+
+    @property
+    def fingerprint_count(self) -> int:
+        return len(self.fingers)
+
+    @property
+    def fingerprint_label(self) -> str:
+        if not self.fingerprints_known:
+            return "Unknown"
+        if not self.fingers:
+            return "None"
+        return str(len(self.fingers))
+
+    @property
+    def can_identify(self) -> bool:
+        """Whether the device holds any credential this application can see.
+
+        Faces are excluded deliberately: the device reports a face count but
+        offers no way to attribute a face to a user, so a user with only a face
+        enrolled would be described wrongly here. The label says what is known.
+        """
+        return self.user.has_credential_data or bool(self.fingers)
+
+
 class UserService:
     """Lists and manages the users stored on a device."""
 
@@ -127,11 +177,12 @@ class UserService:
                 users=False,
                 credentials=False,
                 reason=(
-                    "Device writing is switched off. No NG-MB1 has yet accepted a "
-                    "record from this application's 120-byte write path, so it stays "
-                    "off until an administrator enables it deliberately "
-                    "(CLOCKMANAGER_ENABLE_DEVICE_WRITES=1) and proves it with a "
-                    "disposable test user."
+                    "Device writing is switched off. The 120-byte write path is "
+                    "proven on the real NG-MB1 — create, rename, privilege change "
+                    "and delete were all verified by read-back (PHASE 15) — but "
+                    "proving it is not the same as turning it on: a write changes "
+                    "who can enter the building. An administrator enables it "
+                    "deliberately with CLOCKMANAGER_ENABLE_DEVICE_WRITES=1."
                 ),
             )
         if not self._credential_writes_enabled:
@@ -139,10 +190,12 @@ class UserService:
                 users=True,
                 credentials=False,
                 reason=(
-                    "PIN writing is switched off. The credential region's layout is "
-                    "unverified, so setting or clearing a PIN requires "
-                    "CLOCKMANAGER_ENABLE_CREDENTIAL_WRITES=1 and a disposable test "
-                    "user."
+                    "PIN writing is switched off. The PIN's location is now proven "
+                    "— an 8-byte ASCII field at record bytes 3:11, verified set, "
+                    "preserved and cleared on a disposable user (PHASE 15) — but it "
+                    "is gated separately from other user edits, because a PIN is a "
+                    "credential. Enable it with "
+                    "CLOCKMANAGER_ENABLE_CREDENTIAL_WRITES=1."
                 ),
             )
         return WriteAvailability(users=True, credentials=True)
@@ -152,6 +205,47 @@ class UserService:
     def list_users(self, profile: DeviceProfile) -> list[DeviceUser]:
         """Read every user from the device, credential contents excluded."""
         return self._devices.read_users(profile)
+
+    def list_enrolment(self, profile: DeviceProfile) -> list[EnrolledUser]:
+        """Read the users and their fingerprint enrolments in one connection.
+
+        Two reads over one session rather than two connections: the user list
+        and the fingerprint store are matched by device UID, which PHASE 15
+        confirmed agree on the real device.
+
+        A device that will not enumerate fingerprints still returns the users,
+        with ``fingerprints_known`` false. Losing the whole user list because a
+        secondary read failed would be a poor trade.
+        """
+        with self._devices.connected(profile) as device:
+            users = device.get_users()
+            slots, known = self._fingerprint_slots(device)
+
+        by_uid: dict[int, list[int]] = {}
+        for slot in slots:
+            if slot.is_valid:
+                by_uid.setdefault(slot.device_uid, []).append(slot.finger_index)
+        return [
+            EnrolledUser(
+                user=user,
+                fingers=tuple(sorted(by_uid.get(user.device_uid, ()))),
+                fingerprints_known=known,
+            )
+            for user in users
+        ]
+
+    @staticmethod
+    def _fingerprint_slots(device: object) -> tuple[list[FingerprintSlot], bool]:
+        """Enumerate fingerprints if this device can, saying whether it did."""
+        if not isinstance(device, InspectableDevice):
+            return [], False
+        if not device.capabilities.supports(Capability.READ_FINGERPRINT):
+            return [], False
+        try:
+            return device.read_fingerprint_slots(), True
+        except (DeviceError, ValueError) as exc:
+            _logger.warning("Could not enumerate fingerprints", extra={"error": str(exc)})
+            return [], False
 
     def find_user(self, profile: DeviceProfile, device_uid: int) -> DeviceUser | None:
         """Read one user by device UID, or ``None`` if it is not there."""

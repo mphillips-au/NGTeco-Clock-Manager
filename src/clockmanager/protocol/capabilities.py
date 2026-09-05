@@ -41,6 +41,10 @@ class Capability(StrEnum):
     CLEAR_ATTENDANCE = "clear_attendance"
     READ_FINGERPRINT = "read_fingerprint"
     READ_FACE = "read_face"
+    READ_DEVICE_OPTIONS = "read_device_options"
+    WRITE_DEVICE_OPTIONS = "write_device_options"
+    READ_STORAGE = "read_storage"
+    READ_OPERATION_LOG = "read_operation_log"
 
 
 class Support(StrEnum):
@@ -236,6 +240,37 @@ NG_MB1_CAPABILITIES = DeviceCapabilities(
             "records. This capability covers enumeration only. Reading, writing or "
             "enrolling a template is NOT supported and no such operation exists in "
             "the adapter; template bytes are discarded inside the parser."
+        ),
+        Capability.READ_DEVICE_OPTIONS: _verified(
+            "PHASE 15: CMD_OPTIONS_RRQ with a NUL-terminated option name answers "
+            "'Name=Value' on the real NG-MB1. Read-only, fast, and harmless when "
+            "the name is unknown -- the device returns code 4999 and nothing else "
+            "happens. The names this application asks for are a fixed allow-list "
+            "(clockmanager.protocol.options), none of which can carry a credential."
+        ),
+        Capability.WRITE_DEVICE_OPTIONS: _unsupported(
+            "Writing a device option has never been attempted on this hardware and "
+            "no CMD_OPTIONS_WRQ call exists in this application. A wrong value for "
+            "an IP address or a matching threshold is not recoverable over the "
+            "protocol -- PHASE 15 spent forty minutes recovering a device whose "
+            "session service had stopped answering, and remote reboot needs the "
+            "very session that had failed."
+        ),
+        Capability.READ_STORAGE: _verified(
+            "PHASE 15: CMD_GET_FREE_SIZES returns capacities and free counts "
+            "alongside the usage figures the application already read -- 400 "
+            "fingerprint slots, 200 users, 30000 attendance records on the project "
+            "device. The field pyzk labels 'cards' is deliberately NOT surfaced: it "
+            "did not change when a user was added and nothing establishes what it "
+            "counts."
+        ),
+        Capability.READ_OPERATION_LOG: _verified(
+            "PHASE 15: a buffered CMD_DB_RRQ/FCT_OPLOG read returned 528 bytes for "
+            "33 records on the real NG-MB1, and the device's own record count agrees. "
+            "The read and the 16-byte record size are proven; within a record only "
+            "the packed timestamp at bytes 4:8 is. The remaining fields are decoded "
+            "positionally from the ZKTeco SDK layout and are reported as raw numbers, "
+            "never as named operations."
         ),
         Capability.READ_FACE: _unverified(
             "PHASE 15: the device reports a face count and ZKFaceVersion=35 / "

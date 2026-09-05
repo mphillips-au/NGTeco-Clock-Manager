@@ -2,6 +2,91 @@
 
 ## Unreleased
 
+### PHASE 15 (wiring) — the proven capabilities, surfaced in the app (2026-09-06)
+
+`phases/PHASE-15.md` proved four things on the real NG-MB1 that the
+application then did not use. This wires all four through the layers —
+protocol, capability model, services, GUI and diagnostics — and adds
+nothing that PHASE 15 did not establish on hardware. No new write of any
+kind; every operation added here is a read.
+
+#### Device settings (`CMD_OPTIONS_RRQ`)
+
+- `NGTecoMB1Device.read_device_options()` reads the device's own settings
+  and reports a refusal (code 4999) as "not available on this model"
+  rather than as an error, because "this firmware has no work codes" is a
+  useful answer.
+- The names it will ask for are a fixed allow-list,
+  `clockmanager.protocol.options.NG_MB1_OPTIONS`, each carrying the caveat
+  its value needs. `IPAddress` ships with the warning PHASE 15 earned:
+  the device's stored address is not the address it answers on, and it
+  must never be used to reconnect or to scan.
+- A name matching a credential-shaped fragment is refused before a request
+  is built, so `ComKey` and its relatives cannot reach a panel, an export
+  or a log.
+- **There is no option write.** `Capability.WRITE_DEVICE_OPTIONS` is
+  UNSUPPORTED, and an unsupported capability cannot be operator-unlocked.
+
+#### Capacity and usage (`CMD_GET_FREE_SIZES`)
+
+- `DeviceInfo` now carries `DeviceStorage`, so every existing snapshot —
+  dashboard connection test, diagnostics, device information — reads "6 of
+  30,000 used — 29,994 free" instead of "6".
+- A count the device did not report stays "Not reported"; it is never
+  defaulted to zero. pyzk's `cards` field is deliberately absent: nothing
+  establishes what it counts.
+
+#### Fingerprint enrolment, per user
+
+- The Users screen shows how many fingers each person has enrolled,
+  matched to their record by device UID, with a "Cannot clock in" filter
+  for users holding neither a PIN nor a fingerprint.
+- "Unknown" and "None" are different words there and are never conflated:
+  a device that would not enumerate has said nothing, not "nobody is
+  enrolled". A failed enumeration costs the fingerprint column, never the
+  user list.
+- No template byte leaves the protocol parser; only a template's length is
+  ever reported.
+
+#### The device's own operation log (`FCT_OPLOG`)
+
+- Decoded and shown: the clock's record of keypad activity, which is a
+  different question from the audit trail's record of what this
+  application did.
+- Only the 16-byte record size and the timestamp at bytes 4:8 are proven,
+  so operation codes display as numbers ("Operation 5"), never as invented
+  names, and an undecodable timestamp shows as "Unreadable timestamp"
+  instead of taking the other records down with it.
+
+#### Elsewhere
+
+- New read-only `InspectableDevice` interface, implemented by the adapter
+  and the mock, so a device that cannot describe itself is a type error
+  rather than a runtime surprise.
+- `DeviceService.inspect()` gathers all of it in one connection; a section
+  the device will not answer becomes a note, and the rest still arrives.
+- Settings ▸ Device settings gains a read-only "Device information" tab
+  (capacity, settings, fingerprints, device log).
+- The diagnostics trace and its export gained storage, settings and
+  operation-log sections. `CMD_DB_RRQ` payloads stay withheld whole from
+  previews, which is what keeps template bytes out of the export.
+- The write-availability text no longer says no MB1 has accepted a record:
+  one has. Writing still ships off — proving a device accepts a record is
+  not permission for an installation to send one.
+
+Full suite: **1001 passed** (22 real-device deselected), ruff and mypy
+clean. `tests/unit/test_phase15_wiring.py` adds 49 tests pinning each
+capability, its gate, and the limits above.
+
+#### Not done, deliberately
+
+- Nothing that PHASE 15 listed as a trap: no card read or write, no
+  fingerprint enrolment or template upload, no face work, no `set_time`,
+  no attendance clear, no option write.
+- Operation-log codes are not named, and `status` is still not interpreted
+  as a verification method. Both need a deliberate action at the device
+  that nobody has performed yet.
+
 ### PHASE 16 — Synology / Linux headless service (2026-09-06)
 
 The proven device/sync core runs without the Windows GUI. Verified against

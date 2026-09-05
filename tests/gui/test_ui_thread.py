@@ -13,7 +13,13 @@ from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication
 
 from clockmanager.domain.models import AttendanceEvent, DeviceInfo, DeviceUser
-from clockmanager.gui.views import AttendanceView, DashboardView, DiagnosticsView, UsersView
+from clockmanager.gui.views import (
+    AttendanceView,
+    DashboardView,
+    DeviceSettingsView,
+    DiagnosticsView,
+    UsersView,
+)
 from clockmanager.services.application import ApplicationContext
 from clockmanager.services.audit import AuditService
 from clockmanager.services.devices import ConnectionTestResult, DeviceProfile, DeviceService
@@ -65,6 +71,14 @@ class ThreadRecordingService(DeviceService):
         self._record("capabilities")
         return self._inner.capabilities(profile)
 
+    def connected(self, profile: DeviceProfile):  # type: ignore[no-untyped-def]
+        self._record("connected")
+        return self._inner.connected(profile)
+
+    def inspect(self, profile: DeviceProfile):  # type: ignore[no-untyped-def]
+        self._record("inspect")
+        return self._inner.inspect(profile)
+
 
 @pytest.fixture
 def recording(configured_context: ApplicationContext) -> ThreadRecordingService:
@@ -92,8 +106,25 @@ def test_users_view_reads_off_the_ui_thread(
     view.load()
     drain(qt_app)
 
-    assert "read_users" in recording.threads
-    assert recording.threads["read_users"] != ui_thread
+    # The users list reads the user records and the fingerprint store over one
+    # connection, so the session -- not read_users alone -- is what must be off
+    # the UI thread.
+    assert "connected" in recording.threads
+    assert recording.threads["connected"] != ui_thread
+
+
+def test_device_information_reads_off_the_ui_thread(
+    qt_app: QApplication, recording: ThreadRecordingService
+) -> None:
+    """The PHASE 15 device-information read is a device session like any other."""
+    ui_thread = _ui_thread_id()
+    view = DeviceSettingsView(recording)
+    drain(qt_app)
+    view._read_device_information()
+    drain(qt_app)
+
+    assert "inspect" in recording.threads
+    assert recording.threads["inspect"] != ui_thread
 
 
 def test_attendance_view_reads_off_the_ui_thread(

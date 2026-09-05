@@ -6,6 +6,17 @@ PHASE 16 — Synology / Linux headless service: **complete** (see "Headless
 service (PHASE 16)" below). No real-device run and no Synology hardware was
 available; the Docker image is unrun on a NAS.
 
+PHASE 15 (wiring) — the proven capabilities are now **in the application**.
+The four reads PHASE 15 proved and left unused are wired through every layer:
+device settings (`CMD_OPTIONS_RRQ`, allow-listed and read-only), capacity and
+usage (so every snapshot says "6 of 30,000 used" rather than "6"), per-user
+fingerprint enrolment on the Users screen, and the device's own keypad
+operation log. Settings ▸ Device settings gained a read-only "Device
+information" tab, and the diagnostics trace and export gained the same three
+sections. Nothing on the PHASE 15 trap list was implemented, and no new write
+of any kind was added — `WRITE_DEVICE_OPTIONS` is UNSUPPORTED and cannot be
+operator-unlocked. Full entry in `CHANGELOG.md`.
+
 PHASE 15 — Capability investigation: **complete**. The first session to write
 to the real NG-MB1. The write path, the PIN offset and fingerprint enumeration
 all graduated from UNVERIFIED to proven; the read-back comparison that had been
@@ -17,6 +28,10 @@ report, evidence map, prioritised roadmap and incident write-up are in
 > **Outstanding physical actions for the operator.** Both fingerprints need
 > re-enrolling at the device, and a leftover `ZZTEST-LONGID` user at UID 901
 > must be deleted from the keypad — it cannot be deleted over the protocol.
+> Two further questions answer themselves the next time somebody is at the
+> clock: one deliberate punch by finger and one by face would settle what
+> `status` means, and any punch at all settles which live-event layout this
+> firmware sends (the body size is already logged when one arrives).
 
 > **Merged.** The PHASE 14 QA work reached `main` as PR #11; this phase was
 > rebased onto it, so `main` is linear through PHASE 15.
