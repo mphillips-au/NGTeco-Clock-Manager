@@ -2,12 +2,12 @@
 
 ## Unreleased
 
-### PHASE 13 — Windows Packaging (2026-09-04)
+### PHASE 14 — Windows Packaging (2026-09-05)
 
 Production Windows packaging: PyInstaller builds, an Inno Setup 6
 installer, versioning strategy and the release procedure. Full detail in
 `PACKAGING.md`; summary in `STATUS.md` under "Windows packaging (PHASE
-13)".
+14)".
 
 - `packaging/build.py`: unified build automation (`--assets`, `--dev`,
   `--release`, `--installer`, `--verify`, `--all`, `--clean`).
@@ -63,6 +63,143 @@ installer, versioning strategy and the release procedure. Full detail in
 - No real NG-MB1 hardware was available, so the device-connection step of
   the release checklist was not exercised against real hardware in this
   session (consistent with every prior phase).
+
+### PHASE 13 — Settings hub (2026-09-05)
+
+Device settings, diagnostics and account administration stop being three
+separate navigation entries and become sections of one Settings screen, as
+the PHASE 12 brief asked. The sections are General, Device, Payroll,
+Security and Developer.
+
+#### Navigation
+
+- Ten navigation entries instead of twelve: Dashboard, Users, Attendance,
+  Live events, Employees, Timesheets, Reports, Audit log, Backup, Settings.
+- Backup stays a top-level entry: restoring a database is an operational
+  task, not a setting, and it remains administrator-only.
+- `File ▸ Settings` opens the hub; `Developer ▸ Developer settings` opens it
+  at the Developer section, under the same developer-mode gate as before.
+- `MainWindow.show_settings_section(name)` opens one section and reports on
+  the status bar when the role does not have it.
+
+#### Role separation (`sections_for`)
+
+A section a role may not use is not added at all, so there is no tab to
+find:
+
+- Administrator: General, Device, Payroll, Security, Developer.
+- Office staff and viewers: General and Payroll only, with Payroll
+  read-only. Developer tools remain invisible to office staff.
+
+#### Payroll
+
+`TimesheetService` already had full pay-schedule administration with no way
+to reach it: the application only ever called `ensure_default_schedule()`.
+The Payroll section surfaces it — the stored schedules, which one is active,
+and a form to add one (type, anchor date, time zone, day cutoff, duplicate
+interval, longest shift, daily/weekly overtime, decimal display).
+
+- New `Permission.MANAGE_PAYROLL`, granted to administrators only.
+  Deliberately separate from `MANAGE_EMPLOYEES`: office staff maintain the
+  people, but overtime thresholds and pay periods decide what is owed.
+- `create_schedule()` and `activate_schedule()` now take `requester_role`
+  and enforce it, matching every other service; `None` keeps the legacy
+  path for callers without an interactive identity.
+- Changing the active schedule is confirmed, and says plainly that stored
+  punches are not changed.
+
+#### Other sections
+
+- General: light/dark appearance applied immediately, and where this
+  installation keeps its data, config, database and log.
+- Security: hosts the accounts view, plus a read-only statement of what this
+  build may write (device users, PINs, developer mode, database path) and a
+  note that those come from the configuration file, not the application.
+- Developer: hosts diagnostics plus the database metadata that was
+  previously only reachable from the Developer menu.
+
+#### Fixes
+
+- The stylesheet overrode check-box and radio indicator sizes, which
+  discarded the artwork the platform style draws: radio buttons rendered as
+  blank space. The override is gone.
+- Settings has a navigation icon.
+
+### PHASE 12 — UI polish (2026-09-04)
+
+Presentation only. No service, protocol, persistence or permission behaviour
+changed: every screen calls the same services, off the UI thread, under the
+same role gates.
+
+#### Theme
+
+- `gui/theme.py` rewritten around a `Palette` dataclass per theme, with the
+  stylesheet generated from those tokens. Previously the dark sheet styled
+  only a handful of widgets, so the page background stayed light, card values
+  and group-box titles rendered dark-on-dark, and most of the dark theme was
+  unreadable. Every rule that paints a background now also sets a foreground.
+- Coverage added for menus, tooltips, scrollbars, tabs, date fields, progress
+  bars, item-view outlines and dialogs.
+- `current_palette()` lets a view colour a single table cell (items carry no
+  stylesheet) from the active theme instead of a hardcoded hex value.
+- Focus rings are keyboard-only: `FocusVisibilityFilter` (in `gui/app.py`)
+  records the Qt focus reason on the widget as `focusVisible`, and the
+  stylesheet keys the ring off that. Clicking a button no longer boxes it;
+  tabbing to it still does.
+
+#### Shared view vocabulary (`gui/views/common.py`)
+
+- `page_header()` — title, one line of purpose, hairline; used by every view.
+- `fill_table(..., empty_message=...)` — a centred, dimmed, unselectable line
+  spanning the table instead of a row of em-dashes or an empty white slab.
+- `build_table(..., stretch_columns=...)` — named columns absorb spare width,
+  the rest size to content, with `setResizeContentsPrecision(20)` so sizing
+  does not measure every row of a large table.
+- `confirm()` — action-named confirm button ("Delete user", not "Yes"), Cancel
+  as the default and escape button.
+- `notify()` — brief non-blocking corner toast for completed work; failures
+  also stay in the view's status line.
+- `primary_button()`, `muted_label()`, `tint_cell()`.
+
+#### Screens
+
+- Icons and avatars are drawn at runtime (`gui/icons.py`): no image assets,
+  correct at any DPI, recoloured with the theme. Sidebar navigation icons,
+  initials badges for people.
+- Main window: fixed navigation row height, `Ctrl+1`…`Ctrl+9` section
+  shortcuts, and a signed-in identity block naming the operator and role.
+- Dashboard: aligned stat cards with human timestamps ("Last seen today
+  09:25", full detail on hover), a painted seven-day IN/OUT trend
+  (`gui/views/charts.py`, no charting dependency), recent punches with
+  initials badges and IN/OUT colouring, and reference tables that no longer
+  show a phantom selected row.
+- Reports: free-text `YYYY-MM-DD` fields replaced with calendar pickers and
+  named ranges (Today, Yesterday, This week, Last week, This month, Last 30
+  days, Custom); filters laid out as a two-column form; export reports the
+  saved size and file name.
+- Users: search, privilege and "with PIN only" filters (the old privilege
+  picker and Admins-only checkbox were the same filter twice); enrolment and
+  privilege tinting now theme-aware.
+- Attendance: IN/OUT colouring, content-sized columns, filter empty states.
+- Device settings: form width capped, `Save` promoted, `Remove device`
+  marked as destructive.
+- Login: branded header, Enter submits, and a **Remember my username**
+  option. Only the username is stored (`QSettings`), never a password.
+
+#### Corrections
+
+- Device settings claimed "this build never writes to a device" even when
+  device writing was enabled. It now states only what that screen does.
+- Mock attendance is anchored to today rather than a fixed date in March
+  2026, so running against the built-in mock device shows a populated
+  dashboard and trend. Callers that need stable timestamps still pass
+  `reference`.
+
+#### Tests
+
+- Reports date-range tests rewritten for the pickers; `resolve_range()` is
+  tested directly as calendar arithmetic.
+- New tests for remembering and forgetting the login username.
 
 ### PHASE 11 — Biometric / Card Investigation (2026-09-04)
 

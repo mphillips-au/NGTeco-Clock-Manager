@@ -13,19 +13,25 @@ from dataclasses import dataclass
 from typing import Any
 
 from PySide6.QtCore import QSize, QThreadPool, QTimer
+from PySide6.QtGui import QActionGroup, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QHBoxLayout,
+    QLabel,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QStackedWidget,
+    QVBoxLayout,
     QWidget,
 )
 
 from clockmanager import APPLICATION_NAME, __version__
 from clockmanager.diagnostics.logging_setup import get_logger
 from clockmanager.domain.auth import Role
+from clockmanager.gui.icons import avatar_pixmap, nav_icon
+from clockmanager.gui.theme import ThemeName, current_palette, current_theme, set_theme
 from clockmanager.gui.views import (
     AttendanceView,
     AuditView,
@@ -36,6 +42,7 @@ from clockmanager.gui.views import (
     EmployeesView,
     LiveEventsView,
     ReportsView,
+    SettingsView,
     TimesheetsView,
     UserAccountsView,
     UsersView,
@@ -49,14 +56,17 @@ _logger = get_logger(__name__)
 
 #: Views every logged-in role may see. Reads need no permission; everything a
 #: role may not do is disabled inside the view or refused by the service.
+#: Settings is here for every role: its own sections are role-filtered, so a
+#: viewer opens it and finds appearance and read-only pay rules, nothing more.
 _VIEWER_VIEWS: frozenset[str] = frozenset(
-    {"Dashboard", "Users", "Attendance", "Employees", "Timesheets", "Reports"}
+    {"Dashboard", "Users", "Attendance", "Employees", "Timesheets", "Reports", "Settings"}
 )
 #: Office staff additionally run live capture and read the audit log.
 _OFFICE_VIEWS: frozenset[str] = _VIEWER_VIEWS | {"Live events", "Audit log"}
-#: The eleven pre-PHASE-07 views, in navigation order. Backup is
-#: administrator-only (it holds the full database copy); office staff and
-#: viewers never see it.
+#: Every view, in navigation order. Device settings, diagnostics and account
+#: administration are sections inside Settings rather than navigation entries
+#: of their own. Backup stays separate: restoring a database is an operational
+#: task, not a setting, and it is administrator-only (it holds the full copy).
 _LEGACY_VIEWS: tuple[str, ...] = (
     "Dashboard",
     "Users",
@@ -65,10 +75,9 @@ _LEGACY_VIEWS: tuple[str, ...] = (
     "Employees",
     "Timesheets",
     "Reports",
-    "Device settings",
     "Audit log",
-    "Diagnostics",
     "Backup",
+    "Settings",
 )
 
 
@@ -81,10 +90,14 @@ def visible_views_for(role: Role | None) -> frozenset[str]:
     if role is None:
         return frozenset(_LEGACY_VIEWS)
     if role == Role.ADMIN:
-        return frozenset(_LEGACY_VIEWS) | {"User accounts"}
+        return frozenset(_LEGACY_VIEWS)
     if role == Role.OFFICE_STAFF:
         return _OFFICE_VIEWS
     return _VIEWER_VIEWS
+
+
+#: Sidebar row height in pixels.
+_NAV_ROW_HEIGHT = 34
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,7 +130,7 @@ class MainWindow(QMainWindow):
         self._users_service = context.users
         role = self._role
 
-        self.dashboard_view = DashboardView(context, self._service, self)
+        self.dashboard_view = DashboardView(context, self._service, self, role=role)
         self.users_view = UsersView(self._service, self._users_service, self, role=role)
         self.attendance_view = AttendanceView(self._service, self._sync_service, self, role=role)
         self.live_view = LiveEventsView(self._service, self._sync_service, self, role=role)
@@ -132,6 +145,18 @@ class MainWindow(QMainWindow):
         if current_user is not None and self._role == Role.ADMIN:
             self.accounts_view = UserAccountsView(context.auth, current_user, self)
 
+        # Device settings, diagnostics and account administration are hosted
+        # by Settings. They are still built as views and still enforce their
+        # own permissions; the hub only decides which sections it shows.
+        self.settings_view = SettingsView(
+            context,
+            device_settings=self.device_settings_view,
+            diagnostics=self.diagnostics_view,
+            accounts=self.accounts_view,
+            parent=self,
+            role=role,
+        )
+
         all_entries = [
             _NavigationEntry("Dashboard", self.dashboard_view),
             _NavigationEntry("Users", self.users_view),
@@ -140,13 +165,10 @@ class MainWindow(QMainWindow):
             _NavigationEntry("Employees", self.employees_view),
             _NavigationEntry("Timesheets", self.timesheets_view),
             _NavigationEntry("Reports", self.reports_view),
-            _NavigationEntry("Device settings", self.device_settings_view),
             _NavigationEntry("Audit log", self.audit_view),
-            _NavigationEntry("Diagnostics", self.diagnostics_view),
             _NavigationEntry("Backup", self.backup_view),
+            _NavigationEntry("Settings", self.settings_view),
         ]
-        if self.accounts_view is not None:
-            all_entries.append(_NavigationEntry("User accounts", self.accounts_view))
 
         # Hidden restricted screens (PHASE 07): a role that may not see a
         # view gets no navigation entry and no menu item for it. The widget
@@ -156,21 +178,73 @@ class MainWindow(QMainWindow):
         self._entries = [entry for entry in all_entries if entry.label in visible]
 
         self._navigation = QListWidget(self)
-        self._navigation.setMaximumWidth(200)
-        self._navigation.setIconSize(QSize(16, 16))
-        for entry in self._entries:
-            self._navigation.addItem(QListWidgetItem(entry.label))
+        self._navigation.setObjectName("Navigation")
+        self._navigation.setMaximumWidth(210)
+        self._navigation.setIconSize(QSize(18, 18))
+        self._navigation.setAccessibleName("Sections")
+        self._navigation.setUniformItemSizes(True)
+        for position, entry in enumerate(self._entries, start=1):
+            item = QListWidgetItem(entry.label)
+            item.setIcon(nav_icon(entry.label, current_palette().text_muted))
+            # A fixed row height keeps the sidebar compact and predictable
+            # instead of letting the platform style pick a size per row.
+            item.setSizeHint(QSize(0, _NAV_ROW_HEIGHT))
+            if position <= 9:
+                item.setToolTip(f"{entry.label} (Ctrl+{position})")
+            self._navigation.addItem(item)
         self._navigation.currentRowChanged.connect(self._on_navigate)
+        self._install_navigation_shortcuts()
 
         self._stack = QStackedWidget(self)
         for entry in self._entries:
             self._stack.addWidget(entry.widget)
 
+        sidebar = QWidget(self)
+        sidebar.setObjectName("Sidebar")
+        sidebar.setMinimumWidth(185)
+        sidebar.setMaximumWidth(225)
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(12, 16, 12, 12)
+        sidebar_layout.setSpacing(8)
+        brand = QLabel("NGTECO\nClock Manager", sidebar)
+        brand.setObjectName("SidebarBrand")
+        brand.setAccessibleName("NGTeco Clock Manager")
+        role_label = QLabel(self._workspace_description(), sidebar)
+        role_label.setObjectName("SidebarRole")
+        role_label.setWordWrap(True)
+        sidebar_layout.addWidget(brand)
+        sidebar_layout.addWidget(role_label)
+        sidebar_layout.addWidget(self._navigation, stretch=1)
+        # Who is signed in, kept in view at all times: an operator should
+        # never have to guess whether they are in the administrator or the
+        # office workspace before touching a device control.
+        if self._current_user is not None:
+            name = self._current_user.display_name or self._current_user.username
+            identity = QLabel(f"{name}\n{self._current_user.role.label}", sidebar)
+            identity.setObjectName("SidebarRole")
+            identity.setWordWrap(True)
+            identity.setAccessibleName(
+                f"Signed in as {self._current_user.username}, {self._current_user.role.label}"
+            )
+            palette = current_palette()
+            avatar = QLabel(sidebar)
+            avatar.setPixmap(avatar_pixmap(name, palette.accent, palette.accent_text, size=30))
+            avatar.setFixedSize(30, 30)
+            identity_row = QHBoxLayout()
+            identity_row.setContentsMargins(0, 6, 0, 0)
+            identity_row.setSpacing(8)
+            identity_row.addWidget(avatar)
+            identity_row.addWidget(identity, stretch=1)
+            sidebar_layout.addLayout(identity_row)
+
         layout = QHBoxLayout()
-        layout.addWidget(self._navigation)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(sidebar)
         layout.addWidget(self._stack, stretch=1)
 
         central = QWidget(self)
+        central.setObjectName("MainContent")
         central.setLayout(layout)
         self.setCentralWidget(central)
 
@@ -215,6 +289,16 @@ class MainWindow(QMainWindow):
 
         run_off_thread(_work, on_success=_done, on_failure=_failed)
 
+    def _install_navigation_shortcuts(self) -> None:
+        """Ctrl+1…Ctrl+9 jump straight to a section.
+
+        Daily users move between Dashboard, Attendance and Reports constantly;
+        a keyboard route matters more here than anywhere else in the product.
+        """
+        for position, entry in enumerate(self._entries[:9], start=1):
+            shortcut = QShortcut(QKeySequence(f"Ctrl+{position}"), self)
+            shortcut.activated.connect(lambda label=entry.label: self.show_view(label))
+
     # -- navigation -----------------------------------------------------------
 
     @property
@@ -230,9 +314,38 @@ class MainWindow(QMainWindow):
                 return
         self.statusBar().showMessage(f"{label} is not available for your role.")
 
+    def _repaint_navigation_icons(self) -> None:
+        """Draw the selected row's icon light and the rest muted.
+
+        The stylesheet cannot recolour a pixmap, so the icon is redrawn when
+        the selection moves; at twelve rows this is far cheaper than keeping
+        two icon sets alive per theme.
+        """
+        palette = current_palette()
+        current = self._navigation.currentRow()
+        for row, entry in enumerate(self._entries):
+            item = self._navigation.item(row)
+            colour = palette.accent_text if row == current else palette.text_muted
+            item.setIcon(nav_icon(entry.label, colour))
+
+    def show_settings_section(self, section: str) -> None:
+        """Open Settings at one section, when this role has that section."""
+        self.show_view("Settings")
+        if not self.settings_view.show_section(section):
+            self.statusBar().showMessage(f"{section} settings are not available for your role.")
+
+    def repaint_theme_artwork(self) -> None:
+        """Redraw painted artwork after a theme change made elsewhere.
+
+        Settings has an appearance control, and painted icons carry no
+        stylesheet, so the window redraws them when asked.
+        """
+        self._repaint_navigation_icons()
+
     def _on_navigate(self, row: int) -> None:
         if not 0 <= row < len(self._entries):
             return
+        self._repaint_navigation_icons()
         entry = self._entries[row]
         self._stack.setCurrentWidget(entry.widget)
         self.statusBar().showMessage(entry.label)
@@ -250,25 +363,26 @@ class MainWindow(QMainWindow):
             self.timesheets_view.load_employees()
         elif entry.widget is self.reports_view:
             self.reports_view.load_employees()
-        elif entry.widget is self.device_settings_view:
+        elif entry.widget is self.backup_view:
+            self.backup_view.load()
+        elif entry.widget is self.settings_view:
+            # The hub's sections read stored state, so refresh what it hosts.
+            self.settings_view.load()
             self.device_settings_view.refresh()
-        elif entry.widget is self.diagnostics_view:
             self.diagnostics_view.set_live_capture_state(
                 "Running" if self.live_view.is_capturing else "Not running"
             )
-        elif entry.widget is self.backup_view:
-            self.backup_view.load()
-        elif self.accounts_view is not None and entry.widget is self.accounts_view:
-            self.accounts_view.load()
+            if self.accounts_view is not None:
+                self.accounts_view.load()
 
     # -- menus ----------------------------------------------------------------
 
     def _build_menus(self) -> None:
         labels = {entry.label for entry in self._entries}
         file_menu = self.menuBar().addMenu("&File")
-        if "Device settings" in labels:
-            settings_action = file_menu.addAction("&Device settings")
-            settings_action.triggered.connect(lambda: self.show_view("Device settings"))
+        if "Settings" in labels:
+            settings_action = file_menu.addAction("&Settings")
+            settings_action.triggered.connect(lambda: self.show_view("Settings"))
             file_menu.addSeparator()
         if self._current_user is not None:
             logout_action = file_menu.addAction("&Logout")
@@ -284,6 +398,18 @@ class MainWindow(QMainWindow):
                 lambda _checked=False, label=entry.label: self.show_view(label)
             )
 
+        appearance_menu = view_menu.addMenu("Appearance")
+        theme_group = QActionGroup(self)
+        theme_group.setExclusive(True)
+        for label, name in (("Light", "light"), ("Dark", "dark")):
+            action = appearance_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(current_theme() == name)
+            theme_group.addAction(action)
+            action.triggered.connect(
+                lambda _checked=False, selected=name: self._change_theme(selected)
+            )
+
         help_menu = self.menuBar().addMenu("&Help")
         about_action = help_menu.addAction("&About")
         about_action.triggered.connect(self._show_about)
@@ -292,8 +418,28 @@ class MainWindow(QMainWindow):
         # The pre-login/test path (no identity) keeps the legacy gate.
         if self._context.config.developer_mode and (self._role is None or self._role == Role.ADMIN):
             developer_menu = self.menuBar().addMenu("&Developer")
+            developer_action = developer_menu.addAction("Developer &settings")
+            developer_action.triggered.connect(lambda: self.show_settings_section("Developer"))
             schema_action = developer_menu.addAction("Database &metadata")
             schema_action.triggered.connect(self._show_schema_info)
+
+    def _workspace_description(self) -> str:
+        """Name the operator workspace without exposing restricted tools."""
+        if self._role == Role.ADMIN:
+            return "Administrator workspace\nDevice and security tools available"
+        if self._role == Role.OFFICE_STAFF:
+            return "Office workspace\nDevice and developer tools are restricted"
+        if self._role == Role.VIEWER:
+            return "Read-only workspace"
+        return "Local setup workspace"
+
+    def _change_theme(self, name: ThemeName) -> None:
+        """Apply a user-selected appearance immediately and persist it."""
+        app = QApplication.instance()
+        if isinstance(app, QApplication):
+            set_theme(app, name)
+        # Painted artwork carries no stylesheet, so it is redrawn by hand.
+        self._repaint_navigation_icons()
 
     @property
     def logout_requested(self) -> bool:

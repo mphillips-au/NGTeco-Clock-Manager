@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from clockmanager.gui.views.common import build_table, fill_table, run_off_thread, section_label
+from clockmanager.gui.views.common import build_table, fill_table, page_header, run_off_thread
 from clockmanager.services.audit import AuditEntry, AuditOutcome, AuditService
 
 __all__ = ["AuditView"]
@@ -63,7 +63,12 @@ class AuditView(QWidget):
         controls.addWidget(self._outcome)
 
         layout = QVBoxLayout()
-        layout.addWidget(section_label("Audit log", self))
+        layout.addWidget(
+            page_header(
+                "Audit log",
+                "Every device change, export and sign-in, in the order it happened. The log is append-only and is never edited from here.",
+            )
+        )
         layout.addLayout(controls)
         layout.addWidget(self._status)
         layout.addWidget(self._table, stretch=1)
@@ -75,6 +80,7 @@ class AuditView(QWidget):
             )
         )
         self.setLayout(layout)
+        fill_table(self._table, [], empty_message="Loading the audit log…")
 
     # No load here: like every other view, this one does its I/O when the
     # window navigates to it, never while it is being constructed.
@@ -109,7 +115,15 @@ class AuditView(QWidget):
             if (not outcome or entry.outcome == outcome)
             and (not needle or needle in " ".join(entry.as_row()).lower())
         ]
-        fill_table(self._table, rows)
+        fill_table(
+            self._table,
+            rows,
+            empty_message=(
+                "No entries match these filters."
+                if self._entries
+                else "Nothing recorded yet. Actions appear here as they happen."
+            ),
+        )
 
     def _on_failure(self, message: str) -> None:
         self._refresh_button.setEnabled(True)

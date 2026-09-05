@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -29,9 +31,11 @@ from clockmanager.domain.payroll import Employee
 from clockmanager.gui.views.common import (
     build_table,
     fill_table,
+    page_header,
+    primary_button,
     role_allows,
     run_off_thread,
-    section_label,
+    set_status,
 )
 from clockmanager.services.employees import EmployeeProfile, EmployeeService
 
@@ -129,12 +133,18 @@ class EmployeesView(QWidget):
 
         self._table = build_table(_HEADERS, self)
         self._filter = QLineEdit(self)
-        self._filter.setPlaceholderText("Filter by user ID, name or department…")
+        self._filter.setPlaceholderText("Filter by user ID, name or department…  (Ctrl+F)")
+        self._filter.setClearButtonEnabled(True)
+        self._filter.setAccessibleName("Filter employees by user ID, name or department")
         self._filter.textChanged.connect(self._apply_filter)
 
-        self._add_button = QPushButton("Add", self)
+        focus_search = QShortcut("Ctrl+F", self)
+        focus_search.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        focus_search.activated.connect(self._filter.setFocus)
+
+        self._add_button = primary_button("Add employee…", self)
         self._add_button.clicked.connect(self._on_add)
-        self._edit_button = QPushButton("Edit", self)
+        self._edit_button = QPushButton("Edit…", self)
         self._edit_button.clicked.connect(self._on_edit)
         self._toggle_button = QPushButton("Deactivate", self)
         self._toggle_button.clicked.connect(self._on_toggle)
@@ -152,11 +162,17 @@ class EmployeesView(QWidget):
         controls.addWidget(self._filter, stretch=1)
 
         layout = QVBoxLayout()
-        layout.addWidget(section_label("Employees", self))
+        layout.addWidget(
+            page_header(
+                "Employees",
+                "The people you pay, linked to the user IDs the clock reports. Editing here never changes the device.",
+            )
+        )
         layout.addLayout(controls)
         layout.addWidget(self._status)
         layout.addWidget(self._table, stretch=1)
         self.setLayout(layout)
+        fill_table(self._table, [], empty_message="Loading employees…")
         if not role_allows(self._role, Permission.MANAGE_EMPLOYEES):
             label = self._role.label if self._role is not None else "this role"
             self._status.setText(
@@ -166,6 +182,7 @@ class EmployeesView(QWidget):
             self._add_button.setEnabled(False)
 
     def load(self) -> None:
+        set_status(self._status, "Loading employees…", "loading")
         run_off_thread(
             self._service.list_employees, on_success=self._on_loaded, on_failure=self._on_failure
         )
@@ -232,7 +249,14 @@ class EmployeesView(QWidget):
             return
         self._employees = employees
         actives = sum(1 for e in employees if e.active)
-        self._status.setText(f"{len(employees)} employee(s), {actives} active.")
+        if not employees:
+            set_status(
+                self._status,
+                "No employees yet. Add one to start building timesheets.",
+                "info",
+            )
+        else:
+            set_status(self._status, f"{len(employees)} employee(s), {actives} active.", "info")
         if not role_allows(self._role, Permission.MANAGE_EMPLOYEES):
             self._status.setText(self._status.text() + " Read-only for your role.")
         self._apply_filter()
@@ -255,7 +279,21 @@ class EmployeesView(QWidget):
             or needle in e.display_name.lower()
             or needle in e.department.lower()
         ]
-        fill_table(self._table, rows)
+        fill_table(
+            self._table,
+            rows,
+            empty_message=(
+                "No employees match this search."
+                if self._employees
+                else "No employees yet. Add one, or import the user IDs the clock reports."
+            ),
+        )
+        if self._employees and not rows:
+            set_status(
+                self._status,
+                "No employees match the current filter. Clear it to see everyone.",
+                "info",
+            )
 
     def _on_failure(self, message: str) -> None:
-        self._status.setText(message)
+        set_status(self._status, message, "error")

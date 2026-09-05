@@ -2,7 +2,7 @@
 
 ## Current phase
 
-PHASE 13 — Windows packaging: **complete**. PyInstaller `onedir` builds
+PHASE 14 — Windows packaging: **complete**. PyInstaller `onedir` builds
 (development console build and release windowed build), an Inno Setup 6
 installer, HKCU startup registration, firewall/network guidance and the
 release procedure are documented in `PACKAGING.md`. Verified end-to-end in
@@ -15,9 +15,15 @@ Start Menu shortcuts while leaving
 `%LOCALAPPDATA%\NGTecoClockManager` (database, logs, backups) completely
 untouched.
 
+PHASE 13 — Settings hub: **complete**. Device settings, diagnostics and
+account administration are now sections of one role-filtered Settings screen,
+alongside General, Payroll and Security. One new permission
+(`MANAGE_PAYROLL`, administrator-only) gates pay-schedule changes.
+
 ## Next phase
 
-PHASE 12 — UI polish (deferred, not yet started).
+Not yet chosen. Candidates: multi-device support, or the headless Synology
+service.
 
 ## What exists now
 
@@ -62,14 +68,28 @@ Layer separation is in place and enforced by tests:
 - `clockmanager.security` — redaction helpers
 - `clockmanager.diagnostics` — structured JSON logging with a redacting filter
   on every handler
-- `clockmanager.gui` — PySide6 application: navigation shell plus Dashboard,
+- `clockmanager.gui` — PySide6 application. `theme.py` holds one `Palette`
+  per light/dark theme and generates the whole stylesheet from those tokens;
+  `icons.py` draws navigation icons and initials avatars at runtime (no image
+  assets); `views/common.py` holds the shared page header, table, empty-state,
+  confirmation and toast helpers every view uses; `views/charts.py` paints the
+  dashboard trend with no charting dependency. Focus rings appear only for
+  keyboard navigation (`FocusVisibilityFilter` in `app.py`). The theme choice
+  lives in `QSettings`, as does the optional remembered login username — never
+  a password. Navigation shell plus Dashboard,
   Users, Attendance, Live events, Employees, Timesheets, Reports, Device settings,
   Audit log, Diagnostics and Backup
   views; the only subpackage allowed to import PySide6. Device settings hosts
   read-only discovery (check one address, scan the LAN, register by name);
   Backup (admin-only) creates/previews/restores backups and shows offline status.
   Diagnostics (admin-only) runs timed connection reports, full protocol traces
-  with redacted raw detail, and sanitized JSON exports.
+  with redacted raw detail, and sanitized JSON exports. Device settings,
+  Diagnostics and User accounts are reached through the Settings hub
+  (`views/settings.py`), which shows General, Device, Payroll, Security and
+  Developer sections filtered by role: office staff and viewers get General
+  and a read-only Payroll only. Payroll surfaces the pay-schedule
+  administration `TimesheetService` already had, gated by
+  `Permission.MANAGE_PAYROLL` (administrators only).
 
 Entry point `clockmanager` starts the GUI; `clockmanager --headless` runs the
 same bootstrap without importing PySide6.
@@ -232,7 +252,7 @@ Known device:
   only.
 - Reports and exports are derived read-only views (PHASE 06); raw
   attendance, sync history and audit rows are never mutated by building or
-  exporting. Windows packaging/installer is complete (PHASE 13); see
+  exporting. Windows packaging/installer is complete (PHASE 14); see
   `PACKAGING.md`.
 - SQLite returns naive datetimes on read. `received_at` is normalised to
   aware UTC on read (`as_aware_utc`); `occurred_at` stays naive deliberately
@@ -363,7 +383,7 @@ is given a fixture one; diagnostics builds devices without write unlocks
 and offers no write/delete/clear/set-time operation anywhere (pinned by
 tests, including a GUI check that no such button exists).
 
-## Windows packaging (PHASE 13)
+## Windows packaging (PHASE 14)
 
 Full detail lives in `PACKAGING.md`; summary here for cross-reference.
 

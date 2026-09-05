@@ -5,17 +5,58 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtWidgets import QApplication, QDialog, QWidget
 
 from clockmanager import APPLICATION_NAME, __version__
 from clockmanager.diagnostics.logging_setup import get_logger
 from clockmanager.gui.main_window import MainWindow
+from clockmanager.gui.theme import current_theme, set_theme
 from clockmanager.gui.views.auth import BootstrapAdminDialog, LoginDialog
 from clockmanager.services.application import ApplicationContext
 from clockmanager.services.auth import AuthenticatedUser
 
-__all__ = ["build_application", "run_gui"]
+__all__ = ["FocusVisibilityFilter", "build_application", "run_gui"]
+
+#: The ways focus arrives that mean somebody is navigating by keyboard.
+_KEYBOARD_REASONS = frozenset(
+    {
+        Qt.FocusReason.TabFocusReason,
+        Qt.FocusReason.BacktabFocusReason,
+        Qt.FocusReason.ShortcutFocusReason,
+    }
+)
+
+
+class FocusVisibilityFilter(QObject):
+    """Marks widgets that received focus from the keyboard.
+
+    A focus ring is essential for anyone driving the application by keyboard
+    and looks like a defect when it appears around a button somebody simply
+    clicked. Qt has no ``:focus-visible``, so the focus reason is recorded on
+    the widget as ``focusVisible`` and the stylesheet keys the ring off that.
+    """
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802 - Qt override
+        if isinstance(watched, QWidget):
+            if event.type() == QEvent.Type.FocusIn:
+                reason = event.reason()  # type: ignore[attr-defined]
+                self._mark(watched, reason in _KEYBOARD_REASONS)
+            elif event.type() == QEvent.Type.FocusOut:
+                self._mark(watched, False)
+        return False  # never consume: this only observes
+
+    @staticmethod
+    def _mark(widget: QWidget, visible: bool) -> None:
+        want = "true" if visible else "false"
+        if widget.property("focusVisible") == want:
+            return
+        widget.setProperty("focusVisible", want)
+        style = widget.style()
+        style.unpolish(widget)
+        style.polish(widget)
+
 
 _logger = get_logger(__name__)
 
@@ -53,6 +94,14 @@ def build_application(argv: list[str] | None = None) -> QApplication:
     if icon is not None and not icon.isNull():
         app.setWindowIcon(icon)
 
+    # Apply the saved appearance before any window is constructed.  Doing it
+    # here, rather than in one view, keeps dialogs and every role's workspace
+    # visually consistent.
+    set_theme(app, current_theme())
+    # Held on the application so it lives as long as the process does.
+    focus_filter = FocusVisibilityFilter(app)
+    app.installEventFilter(focus_filter)
+    app.setProperty("focusVisibilityFilter", focus_filter)
     return app
 
 

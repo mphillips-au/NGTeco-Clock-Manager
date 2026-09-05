@@ -8,11 +8,13 @@ and refuses hidden screens instead of crashing.
 from __future__ import annotations
 
 import pytest
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication, QDialog
 
 from clockmanager.domain.auth import Role
 from clockmanager.gui.main_window import MainWindow, visible_views_for
 from clockmanager.gui.views.auth import BootstrapAdminDialog, LoginDialog, UserAccountsView
+from clockmanager.gui.views.settings import sections_for
 from clockmanager.services.application import ApplicationContext
 from clockmanager.services.auth import AuthenticatedUser
 from tests.gui.conftest import drain
@@ -58,23 +60,27 @@ def test_visible_views_for_each_role() -> None:
             "Employees",
             "Timesheets",
             "Reports",
-            "Device settings",
             "Audit log",
-            "Diagnostics",
             "Backup",
+            "Settings",
         }
     )
-    assert "User accounts" in visible_views_for(Role.ADMIN)
-    assert "Device settings" in visible_views_for(Role.ADMIN)
+    assert visible_views_for(Role.ADMIN) == visible_views_for(None)
     office = visible_views_for(Role.OFFICE_STAFF)
-    assert {"Live events", "Audit log"} <= office
-    assert "Device settings" not in office
-    assert "Diagnostics" not in office
-    assert "User accounts" not in office
+    assert {"Live events", "Audit log", "Settings"} <= office
+    assert "Backup" not in office
     viewer = visible_views_for(Role.VIEWER)
     assert viewer == frozenset(
-        {"Dashboard", "Users", "Attendance", "Employees", "Timesheets", "Reports"}
+        {"Dashboard", "Users", "Attendance", "Employees", "Timesheets", "Reports", "Settings"}
     )
+
+
+def test_settings_sections_separate_admin_from_office() -> None:
+    """Device, Security and Developer settings are administrator-only, and a
+    role that may not use a section is never shown its tab."""
+    assert sections_for(Role.ADMIN) == ("General", "Device", "Payroll", "Security", "Developer")
+    assert sections_for(Role.OFFICE_STAFF) == ("General", "Payroll")
+    assert sections_for(Role.VIEWER) == ("General", "Payroll")
 
 
 def test_admin_sees_everything_including_accounts(
@@ -85,11 +91,17 @@ def test_admin_sees_everything_including_accounts(
     try:
         drain(qt_app)
         labels = [entry.label for entry in window._entries]
-        assert "User accounts" in labels
-        assert "Device settings" in labels
-        assert "Diagnostics" in labels
+        assert "Settings" in labels
         assert "Backup" in labels
         assert window.accounts_view is not None
+        # The restricted screens are sections of Settings, not navigation rows.
+        assert window.settings_view.section_labels == (
+            "General",
+            "Device",
+            "Payroll",
+            "Security",
+            "Developer",
+        )
     finally:
         window.close()
 
@@ -104,10 +116,10 @@ def test_office_hides_device_settings_diagnostics_and_accounts(
         labels = [entry.label for entry in window._entries]
         assert "Live events" in labels
         assert "Audit log" in labels
-        assert "Device settings" not in labels
-        assert "Diagnostics" not in labels
-        assert "User accounts" not in labels
         assert "Backup" not in labels
+        # Office staff reach Settings, but only its unrestricted sections.
+        assert window.settings_view.section_labels == ("General", "Payroll")
+        assert window.accounts_view is None
     finally:
         window.close()
 
@@ -127,6 +139,7 @@ def test_viewer_sees_read_only_views_only(
             "Employees",
             "Timesheets",
             "Reports",
+            "Settings",
         ]
     finally:
         window.close()
@@ -139,9 +152,14 @@ def test_hidden_view_refuses_instead_of_crashing(
     window = MainWindow(mock_context, current_user=users["viewer"])
     try:
         drain(qt_app)
-        window.show_view("Device settings")
+        window.show_view("Backup")
         drain(qt_app)
-        assert window.current_view_name != "Device settings"
+        assert window.current_view_name != "Backup"
+        assert "not available" in window.statusBar().currentMessage()
+
+        # The same refusal covers a settings section the role may not open.
+        window.show_settings_section("Developer")
+        drain(qt_app)
         assert "not available" in window.statusBar().currentMessage()
     finally:
         window.close()
@@ -161,10 +179,9 @@ def test_legacy_window_without_login_is_unchanged(
             "Employees",
             "Timesheets",
             "Reports",
-            "Device settings",
             "Audit log",
-            "Diagnostics",
             "Backup",
+            "Settings",
         ]
     finally:
         window.close()
@@ -365,3 +382,47 @@ def test_accounts_view_lists_accounts_for_admin(
         assert names == {"boss", "office", "viewer"}
     finally:
         view.close()
+
+
+def test_login_remembers_username_when_asked(
+    qt_app: QApplication, mock_context: ApplicationContext
+) -> None:
+    """Ticking the box stores the username for the next sign-in."""
+    make_users(mock_context)
+    QSettings().remove("login/username")
+    dialog = LoginDialog(mock_context.auth)
+    try:
+        dialog._username.setText("viewer")
+        dialog._password.setText(PASSWORD)
+        dialog._remember.setChecked(True)
+        dialog._on_accept()
+    finally:
+        dialog.close()
+
+    assert QSettings().value("login/username") == "viewer"
+    reopened = LoginDialog(mock_context.auth)
+    try:
+        assert reopened._username.text() == "viewer"
+        assert reopened._remember.isChecked()
+        assert reopened._password.text() == ""  # never stored
+    finally:
+        reopened.close()
+        QSettings().remove("login/username")
+
+
+def test_login_forgets_username_when_unticked(
+    qt_app: QApplication, mock_context: ApplicationContext
+) -> None:
+    """Signing in with the box clear removes anything previously stored."""
+    make_users(mock_context)
+    QSettings().setValue("login/username", "viewer")
+    dialog = LoginDialog(mock_context.auth)
+    try:
+        dialog._remember.setChecked(False)
+        dialog._username.setText("viewer")
+        dialog._password.setText(PASSWORD)
+        dialog._on_accept()
+    finally:
+        dialog.close()
+
+    assert QSettings().value("login/username") in (None, "")

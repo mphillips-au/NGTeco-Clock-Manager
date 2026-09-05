@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -33,7 +34,14 @@ from PySide6.QtWidgets import (
 from clockmanager.diagnostics.logging_setup import get_logger
 from clockmanager.domain.auth import Permission, Role, normalise_role
 from clockmanager.domain.models import DeviceInfo
-from clockmanager.gui.views.common import role_allows, run_off_thread, section_label
+from clockmanager.gui.views.common import (
+    muted_label,
+    page_header,
+    primary_button,
+    role_allows,
+    run_off_thread,
+    set_status,
+)
 from clockmanager.services.devices import (
     DEFAULT_DEVICE_PORT,
     ConnectionTestResult,
@@ -123,12 +131,16 @@ class DeviceSettingsView(QWidget):
 
         group = QGroupBox("Connection settings", self)
         group.setLayout(form)
+        # A form is read down its left edge; stretching seven fields across a
+        # wide monitor makes it harder to read, not easier.
+        group.setMaximumWidth(620)
 
-        self._save_button = QPushButton("Save", self)
+        self._save_button = primary_button("Save", self)
         self._save_button.clicked.connect(self._save)
         self._test_button = QPushButton("Test connection", self)
         self._test_button.clicked.connect(self._test_connection)
         self._delete_button = QPushButton("Remove device", self)
+        self._delete_button.setObjectName("Danger")
         self._delete_button.clicked.connect(self._delete)
 
         buttons = QHBoxLayout()
@@ -140,12 +152,15 @@ class DeviceSettingsView(QWidget):
         self._status = QLabel("", self)
         self._status.setWordWrap(True)
 
-        notice = QLabel(
-            "Saving stores these settings on this computer. It does not change "
-            "anything on the clock — this build never writes to a device.",
+        # Deliberately says only what this screen does. Whether the build can
+        # write device *users* is a separate setting, reported on the Users
+        # screen and in Help ▸ About; claiming "never writes" here was wrong
+        # whenever device writing was enabled.
+        notice = muted_label(
+            "Saving stores these settings on this computer. It does not reconfigure "
+            "the clock or change anything stored on it.",
             self,
         )
-        notice.setWordWrap(True)
 
         may_manage = role_allows(self._role, Permission.MANAGE_DEVICE_SETTINGS)
 
@@ -205,6 +220,33 @@ class DeviceSettingsView(QWidget):
         discovery_group.setLayout(discovery_layout)
         if not may_manage:
             discovery_group.setEnabled(False)
+            self._save_button.setEnabled(False)
+            self._delete_button.setEnabled(False)
+
+        layout = QVBoxLayout()
+        layout.addWidget(
+            page_header(
+                "Device settings",
+                "How this computer reaches the clock. Saving stores the settings "
+                "locally; it never reconfigures the device.",
+            )
+        )
+        tabs = QTabWidget(self)
+        tabs.setAccessibleName("Device settings sections")
+
+        connection_tab = QWidget(self)
+        connection_layout = QVBoxLayout()
+        connection_layout.addWidget(group)
+        # The action row and its explanation keep the form's width so the
+        # column reads as one block rather than trailing off to the right.
+        action_row = QWidget(self)
+        action_row.setMaximumWidth(620)
+        action_row.setLayout(buttons)
+        connection_layout.addWidget(action_row)
+        self._status.setMaximumWidth(620)
+        notice.setMaximumWidth(620)
+        connection_layout.addWidget(self._status)
+        connection_layout.addWidget(notice)
         locked: QLabel | None = None
         if not may_manage:
             label = self._role.label if self._role is not None else "this role"
@@ -214,20 +256,37 @@ class DeviceSettingsView(QWidget):
                 self,
             )
             locked.setWordWrap(True)
+            connection_layout.addWidget(locked)
             self._save_button.setEnabled(False)
             self._delete_button.setEnabled(False)
+        connection_layout.addStretch(1)
+        connection_tab.setLayout(connection_layout)
+        tabs.addTab(connection_tab, "Connection")
 
-        layout = QVBoxLayout()
-        layout.addWidget(section_label("Device settings", self))
-        layout.addWidget(group)
-        layout.addLayout(buttons)
-        layout.addWidget(self._status)
-        layout.addWidget(self._state_label)
-        layout.addWidget(notice)
-        layout.addWidget(discovery_group)
-        if locked is not None:
-            layout.addWidget(locked)
-        layout.addStretch(1)
+        state_tab = QWidget(self)
+        state_layout = QVBoxLayout()
+        self._reload_state_button = QPushButton("Reload device state", self)
+        self._reload_state_button.clicked.connect(self._reload_state)
+        state_layout.addWidget(self._state_label)
+        state_layout.addWidget(self._reload_state_button)
+        state_note = QLabel(
+            "Last contact, stored counts and recent sync history for the selected "
+            "device. Reads local storage only; the clock is never contacted here.",
+            self,
+        )
+        state_note.setWordWrap(True)
+        state_layout.addWidget(state_note)
+        state_layout.addStretch(1)
+        state_tab.setLayout(state_layout)
+        tabs.addTab(state_tab, "Device state")
+
+        discovery_tab = QWidget(self)
+        discovery_layout = QVBoxLayout()
+        discovery_layout.addWidget(discovery_group)
+        discovery_tab.setLayout(discovery_layout)
+        tabs.addTab(discovery_tab, "Discovery")
+
+        layout.addWidget(tabs, stretch=1)
         self.setLayout(layout)
 
         self.refresh()
@@ -330,16 +389,17 @@ class DeviceSettingsView(QWidget):
     def _save(self) -> None:
         typed = self._password.text().strip()
         if typed and not typed.isdigit():
-            self._status.setText("Communication password must be a number.")
+            set_status(self._status, "Communication password must be a number.", "error")
             return
 
         profile = self._form_profile()
         problems = profile.validate()
         if problems:
-            self._status.setText(" ".join(problems))
+            set_status(self._status, " ".join(problems), "error")
             return
 
         self._set_busy(True)
+        set_status(self._status, "Saving…", "loading")
         run_off_thread(
             lambda: self._service.save_profile(profile, requester_role=self._role),
             on_success=self._on_saved,
@@ -348,12 +408,20 @@ class DeviceSettingsView(QWidget):
 
     def _on_saved(self, _profile: Any) -> None:
         self._set_busy(False)
-        self._status.setText("Settings saved on this computer.")
+        set_status(self._status, "Settings saved on this computer.", "success")
         self.refresh()
+
+    def _reload_state(self) -> None:
+        """Reload the Device state tab for the selected profile."""
+        profile = self._current_profile()
+        if profile is None:
+            set_status(self._state_label, "Add a device first, then review its state.", "info")
+            return
+        self._load_state(profile)
 
     def _load_state(self, profile: DeviceProfile) -> None:
         """Show last-seen and sync state for the selected profile, off-thread."""
-        self._state_label.setText("Loading device state…")
+        set_status(self._state_label, "Loading device state…", "loading")
         run_off_thread(
             lambda: self._service.status(profile),
             on_success=self._on_state_loaded,
@@ -363,20 +431,20 @@ class DeviceSettingsView(QWidget):
     def _on_state_loaded(self, status: Any) -> None:
         if not isinstance(status, DeviceStatus):  # pragma: no cover - defensive
             return
-        self._state_label.setText(status.describe())
+        set_status(self._state_label, status.describe(), "info")
 
     def _on_state_failure(self, message: str) -> None:
-        self._state_label.setText(f"Could not load device state: {message}")
+        set_status(self._state_label, f"Could not load device state: {message}", "error")
 
     def _test_connection(self) -> None:
         profile = self._form_profile()
         problems = profile.validate()
         if problems:
-            self._status.setText(" ".join(problems))
+            set_status(self._status, " ".join(problems), "error")
             return
 
         self._set_busy(True)
-        self._status.setText(f"Connecting to {profile.endpoint}…")
+        set_status(self._status, f"Connecting to {profile.endpoint}…", "loading")
         run_off_thread(
             lambda: self._service.test_connection(profile),
             on_success=self._on_tested,
@@ -387,7 +455,7 @@ class DeviceSettingsView(QWidget):
         self._set_busy(False)
         if not isinstance(result, ConnectionTestResult):  # pragma: no cover - defensive
             return
-        self._status.setText(result.summary)
+        set_status(self._status, result.summary, "success" if result.ok else "error")
 
     def _delete(self) -> None:
         profile = self._current_profile()
@@ -417,7 +485,7 @@ class DeviceSettingsView(QWidget):
 
     def _on_deleted(self, _result: Any) -> None:
         self._set_busy(False)
-        self._status.setText("Device removed from this computer.")
+        set_status(self._status, "Device removed from this computer.", "success")
         self.refresh()
 
     # -- discovery (PHASE 08, read-only) ----------------------------------------
@@ -426,10 +494,10 @@ class DeviceSettingsView(QWidget):
         host = self._discover_host.text().strip()
         port = self._discover_port.value()
         if not host:
-            self._discovery_status.setText("Enter an address to check.")
+            set_status(self._discovery_status, "Enter an address to check.", "warning")
             return
         self._set_busy(True)
-        self._discovery_status.setText(f"Identifying {host}:{port}…")
+        set_status(self._discovery_status, f"Identifying {host}:{port}…", "loading")
         run_off_thread(
             lambda: self._service.identify(host, port=port),
             on_success=self._on_identified,
@@ -438,7 +506,7 @@ class DeviceSettingsView(QWidget):
 
     def _scan_network(self) -> None:
         self._set_busy(True)
-        self._discovery_status.setText("Scanning the local network…")
+        set_status(self._discovery_status, "Scanning the local network…", "loading")
         run_off_thread(
             lambda: self._service.scan_network(port=self._discover_port.value()),
             on_success=self._on_scanned,
@@ -465,19 +533,25 @@ class DeviceSettingsView(QWidget):
         for item in self._found:
             self._results.addItem(QListWidgetItem(item.summary))
         if not self._found:
-            self._discovery_status.setText(
+            set_status(
+                self._discovery_status,
                 "No addresses to scan: the local network could not be determined. "
-                "Check a manually entered address instead."
+                "Check a manually entered address instead.",
+                "warning",
             )
         elif not reachable:
-            self._discovery_status.setText(
+            set_status(
+                self._discovery_status,
                 f"Scanned {len(self._found)} address(es): no device answered. "
-                "Check a manually entered address instead."
+                "Check a manually entered address instead.",
+                "warning",
             )
         else:
-            self._discovery_status.setText(
+            set_status(
+                self._discovery_status,
                 f"Scanned {len(self._found)} address(es): "
-                f"{len(reachable)} answered. Select one to register it."
+                f"{len(reachable)} answered. Select one to register it.",
+                "success",
             )
         self._pending = None
         self._register_button.setEnabled(False)
@@ -491,20 +565,24 @@ class DeviceSettingsView(QWidget):
         """Show what was found and offer an explicit registration."""
         self._pending = found if found.reachable else None
         if not found.reachable:
-            self._discovery_status.setText(f"{found.summary}. Nothing to register.")
+            set_status(self._discovery_status, f"{found.summary}. Nothing to register.", "warning")
             self._register_button.setEnabled(False)
             return
         if found.identity is None:
-            self._discovery_status.setText(
+            set_status(
+                self._discovery_status,
                 f"{found.summary}. It answered but could not be identified, "
-                "so it cannot be registered yet."
+                "so it cannot be registered yet.",
+                "warning",
             )
             self._register_button.setEnabled(False)
             return
         self._register_name.setText(found.suggested_name)
-        self._discovery_status.setText(
+        set_status(
+            self._discovery_status,
             f"{found.summary}. Registering stores a new profile on this "
-            "computer; the device itself is never changed."
+            "computer; the device itself is never changed.",
+            "info",
         )
         may_manage = role_allows(self._role, Permission.MANAGE_DEVICE_SETTINGS)
         self._register_button.setEnabled(may_manage)
@@ -515,7 +593,7 @@ class DeviceSettingsView(QWidget):
             return
         name = self._register_name.text().strip()
         if not name:
-            self._discovery_status.setText("Give the new device a name first.")
+            set_status(self._discovery_status, "Give the new device a name first.", "warning")
             return
         info = DeviceInfo(identity=pending.identity)
         self._set_busy(True)
@@ -537,24 +615,27 @@ class DeviceSettingsView(QWidget):
             return
         self._pending = None
         self._register_button.setEnabled(False)
-        self._discovery_status.setText(
-            f"Registered {profile.name!r}. It now appears in the device list above."
+        set_status(
+            self._discovery_status,
+            f"Registered {profile.name!r}. It now appears in the device list above.",
+            "success",
         )
         self.refresh()
 
     def _on_discovery_failure(self, message: str) -> None:
         self._set_busy(False)
-        self._discovery_status.setText(message)
+        set_status(self._discovery_status, message, "error")
 
     def _on_failure(self, message: str) -> None:
         self._set_busy(False)
-        self._status.setText(message)
+        set_status(self._status, message, "error")
 
     def _set_busy(self, busy: bool) -> None:
         may_manage = role_allows(self._role, Permission.MANAGE_DEVICE_SETTINGS)
         self._save_button.setEnabled(not busy and may_manage)
         self._test_button.setEnabled(not busy)
         self._delete_button.setEnabled(not busy and may_manage)
+        self._reload_state_button.setEnabled(not busy)
         self._check_button.setEnabled(not busy and may_manage)
         self._scan_button.setEnabled(not busy and may_manage)
         self._register_button.setEnabled(not busy and may_manage and self._pending is not None)
