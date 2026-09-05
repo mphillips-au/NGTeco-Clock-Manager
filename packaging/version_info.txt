@@ -1,0 +1,36 @@
+# UTF-8
+#
+# Windows PE Version Resource for NGTeco Clock Manager
+#
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(0, 13, 0, 0),
+    prodvers=(0, 13, 0, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo(
+      [
+        StringTable(
+          '040904B0',
+          [
+            StringStruct('CompanyName', 'NGTeco Clock Manager Project'),
+            StringStruct('FileDescription', 'NGTeco Clock Manager'),
+            StringStruct('FileVersion', '0.13.0.0'),
+            StringStruct('InternalName', 'clockmanager'),
+            StringStruct('LegalCopyright', 'Copyright (C) 2026 NGTeco Clock Manager Project'),
+            StringStruct('OriginalFilename', 'clockmanager.exe'),
+            StringStruct('ProductName', 'NGTeco Clock Manager'),
+            StringStruct('ProductVersion', '0.13.0'),
+          ]
+        )
+      ]
+    ),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)

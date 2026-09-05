@@ -19,7 +19,13 @@ CORE_PACKAGES = ["domain", "persistence", "protocol", "sync", "services", "secur
 
 
 def _core_modules() -> list[Path]:
-    modules = [SRC / "__init__.py", SRC / "config.py", SRC / "errors.py", SRC / "__main__.py"]
+    modules = [
+        SRC / "__init__.py",
+        SRC / "config.py",
+        SRC / "errors.py",
+        SRC / "__main__.py",
+        SRC / "windows.py",
+    ]
     for package in CORE_PACKAGES:
         modules.extend(sorted((SRC / package).rglob("*.py")))
     return modules

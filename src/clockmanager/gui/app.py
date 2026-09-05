@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QDialog, QWidget
 
 from clockmanager import APPLICATION_NAME, __version__
@@ -57,6 +61,24 @@ class FocusVisibilityFilter(QObject):
 _logger = get_logger(__name__)
 
 
+def _find_app_icon() -> QIcon | None:
+    """Locate the bundled or packaged application icon."""
+    meipass = getattr(sys, "_MEIPASS", None)
+    candidates = [
+        Path(sys.executable).parent / "clockmanager.ico",
+        Path(sys.executable).parent / "assets" / "clockmanager.ico",
+        Path(__file__).resolve().parents[3] / "packaging" / "assets" / "clockmanager.ico",
+    ]
+    if meipass:
+        candidates.insert(0, Path(meipass) / "clockmanager.ico")
+        candidates.insert(1, Path(meipass) / "assets" / "clockmanager.ico")
+
+    for c in candidates:
+        if c.is_file():
+            return QIcon(str(c))
+    return None
+
+
 def build_application(argv: list[str] | None = None) -> QApplication:
     """Return the process-wide ``QApplication``, creating it if needed."""
     existing = QApplication.instance()
@@ -67,6 +89,11 @@ def build_application(argv: list[str] | None = None) -> QApplication:
     app.setApplicationName(APPLICATION_NAME)
     app.setApplicationVersion(__version__)
     app.setOrganizationName(APPLICATION_NAME)
+
+    icon = _find_app_icon()
+    if icon is not None and not icon.isNull():
+        app.setWindowIcon(icon)
+
     # Apply the saved appearance before any window is constructed.  Doing it
     # here, rather than in one view, keeps dialogs and every role's workspace
     # visually consistent.

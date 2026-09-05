@@ -15,4 +15,4 @@ from __future__ import annotations
 __all__ = ["APPLICATION_NAME", "__version__"]
 
 APPLICATION_NAME = "NGTeco Clock Manager"
-__version__ = "0.1.0"
+__version__ = "0.13.0"

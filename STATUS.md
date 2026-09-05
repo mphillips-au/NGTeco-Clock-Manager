@@ -2,6 +2,19 @@
 
 ## Current phase
 
+PHASE 14 — Windows packaging: **complete**. PyInstaller `onedir` builds
+(development console build and release windowed build), an Inno Setup 6
+installer, HKCU startup registration, firewall/network guidance and the
+release procedure are documented in `PACKAGING.md`. Verified end-to-end in
+this session on this machine: release build compiled, installer compiled,
+silent install (`/VERYSILENT`), launch (`--version`, `--headless`
+bootstrap against the installed `%LOCALAPPDATA%\Programs\NGTeco Clock
+Manager\clockmanager.exe`), Start Menu shortcut creation, and silent
+uninstall — confirmed the uninstaller removes the program directory and
+Start Menu shortcuts while leaving
+`%LOCALAPPDATA%\NGTecoClockManager` (database, logs, backups) completely
+untouched.
+
 PHASE 13 — Settings hub: **complete**. Device settings, diagnostics and
 account administration are now sections of one role-filtered Settings screen,
 alongside General, Payroll and Security. One new permission
@@ -9,8 +22,8 @@ alongside General, Payroll and Security. One new permission
 
 ## Next phase
 
-Not yet chosen. Candidates: packaging/installer for Windows, multi-device
-support, or the headless Synology service.
+Not yet chosen. Candidates: multi-device support, or the headless Synology
+service.
 
 ## What exists now
 
@@ -239,8 +252,8 @@ Known device:
   only.
 - Reports and exports are derived read-only views (PHASE 06); raw
   attendance, sync history and audit rows are never mutated by building or
-  exporting. Windows
-  packaging/installer is not started (PHASE 13).
+  exporting. Windows packaging/installer is complete (PHASE 14); see
+  `PACKAGING.md`.
 - SQLite returns naive datetimes on read. `received_at` is normalised to
   aware UTC on read (`as_aware_utc`); `occurred_at` stays naive deliberately
   because it is device-local time with no known timezone — do not label it
@@ -369,6 +382,63 @@ user records like the adapter and a raw attendance payload when its script
 is given a fixture one; diagnostics builds devices without write unlocks
 and offers no write/delete/clear/set-time operation anywhere (pinned by
 tests, including a GUI check that no such button exists).
+
+## Windows packaging (PHASE 14)
+
+Full detail lives in `PACKAGING.md`; summary here for cross-reference.
+
+- **Build system**: PyInstaller `onedir` builds driven by
+  `packaging/clockmanager.spec` and orchestrated by `packaging/build.py`
+  (`--dev`, `--release`, `--installer`, `--verify`, `--all`, `--clean`).
+  The dev build keeps a console window (`clockmanager-dev.exe`); the
+  release build is windowed with an embedded PE version resource and icon
+  (`clockmanager.exe`).
+- **Installer**: `packaging/installer.iss` (Inno Setup 6), per-user
+  install under `%LOCALAPPDATA%\Programs\NGTeco Clock Manager`
+  (`PrivilegesRequired=lowest`, no UAC needed), optional desktop/Start Menu
+  shortcuts and an optional "launch at Windows startup" task. Uninstall
+  only ever removes `{app}` — the user data directory is never touched by
+  install, upgrade or uninstall.
+- **Data isolation**: application binaries live under
+  `%LOCALAPPDATA%\Programs\NGTeco Clock Manager`; database, config, logs
+  and backups live under the existing `%LOCALAPPDATA%\NGTecoClockManager`
+  `AppPaths` directory (unchanged from earlier phases), so upgrades never
+  risk the database — the existing forward-only migration path
+  (`initialise_database`) handles schema upgrades on next launch.
+- **Windows platform integration**: new `clockmanager.windows` module
+  (stdlib-only, no PySide6 import, keeps GUI-import layering) providing
+  HKCU `Run` key startup registration (`is_startup_enabled`,
+  `set_startup_enabled`, `get_startup_command`) and firewall/network
+  guidance (`get_firewall_guidance`: TCP/UDP 4370, PowerShell
+  `New-NetFirewallRule` snippets). Exposed on the CLI as
+  `--enable-startup` / `--disable-startup` / `--status-startup` /
+  `--firewall-info` in `clockmanager.__main__`.
+- **Versioning**: semantic version kept in sync across `pyproject.toml`,
+  `src/clockmanager/__init__.py`, `packaging/installer.iss` and
+  `packaging/version_info.txt`; consistency is enforced by
+  `tests/unit/test_packaging.py`.
+- **Verified this session**: `python packaging/build.py --release` builds
+  successfully (PyInstaller 6.22.2, Python 3.12 venv), and
+  `python packaging/build.py --verify` passes — `--version`,
+  `--firewall-info` and `--headless` (real bootstrap: config/DB/log paths
+  under `%LOCALAPPDATA%\NGTecoClockManager`, schema 7, audit log active)
+  all succeed against the compiled `dist\clockmanager\clockmanager.exe`.
+  Full test suite (804 tests), ruff and mypy all pass. Inno Setup 6 was
+  located (`%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe`) and
+  `python packaging/build.py --installer` compiled
+  `NGTecoClockManager-Setup-0.13.0.exe` (~38 MB) successfully. The full
+  install lifecycle was exercised end-to-end on this machine: silent
+  install (`/VERYSILENT /SUPPRESSMSGBOXES`) placed the exe under
+  `%LOCALAPPDATA%\Programs\NGTeco Clock Manager` and created the Start
+  Menu shortcuts; the installed `clockmanager.exe --version` and
+  `--headless` both ran correctly and created the data directory as
+  expected; silent uninstall then removed the program directory and Start
+  Menu shortcuts while leaving `%LOCALAPPDATA%\NGTecoClockManager`
+  (database, logs, backups) completely untouched, confirming the
+  data-preservation guarantee. No real NG-MB1 hardware was available in
+  this session, so the device-connection step of the release checklist
+  remains unverified against real hardware (consistent with every prior
+  phase — see "Verified before this repository build-out").
 
 ## Protocol discoveries
 
