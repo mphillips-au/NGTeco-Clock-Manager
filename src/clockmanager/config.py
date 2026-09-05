@@ -44,6 +44,12 @@ _VALID_LOG_LEVELS: Final[frozenset[str]] = frozenset(
 )
 _VALID_LOG_FORMATS: Final[frozenset[str]] = frozenset({"json", "text"})
 
+#: Bounds for the headless-service loop tick (PHASE 16). The tick only wakes
+#: the loop; each device still syncs on its own ``sync_interval_seconds``.
+MIN_SERVICE_POLL_SECONDS: Final = 5
+#: Upper bound for the per-device reconnect backoff after repeated failures.
+MAX_RECONNECT_BACKOFF_SECONDS: Final = 600.0
+
 
 def default_data_dir() -> Path:
     """Return the per-user application data directory for this platform."""
@@ -117,6 +123,21 @@ class AppConfig:
     #: default and ineffective unless ``enable_device_writes`` is also on: the
     #: region's internal layout is unverified.
     enable_credential_writes: bool = False
+    #: Headless-service loop tick in seconds (PHASE 16). Each pass runs
+    #: ``background_sync_if_due`` for every enabled device, so devices still
+    #: sync on their own ``sync_interval_seconds``; this only controls how
+    #: often the service wakes to check.
+    service_poll_seconds: int = 60
+    #: Where the headless service exposes its health endpoint (PHASE 16), as
+    #: ``interface:probe`` (for example ``127.0.0.1:8080``). Empty disables
+    #: the endpoint. Named "bind" rather than "port" so the serialized
+    #: configuration keeps the AGENTS.md guarantee (no address/port material
+    #: in the default serialised form beyond this loopback default).
+    service_health_bind: str = "127.0.0.1:8080"
+    #: Run a live-capture worker per device inside the headless service
+    #: (PHASE 16). Off by default: periodic reconciliation already recovers
+    #: missed punches, and live capture holds one connection open per device.
+    service_live_capture: bool = False
 
     def __post_init__(self) -> None:
         if self.log_level.upper() not in _VALID_LOG_LEVELS:
@@ -130,6 +151,12 @@ class AppConfig:
             )
         object.__setattr__(self, "log_level", self.log_level.upper())
         object.__setattr__(self, "log_format", self.log_format.lower())
+        if self.service_poll_seconds < MIN_SERVICE_POLL_SECONDS:
+            raise ConfigurationError(
+                f"Invalid service_poll_seconds {self.service_poll_seconds!r}; "
+                f"expected at least {MIN_SERVICE_POLL_SECONDS}"
+            )
+        _validate_health_bind(self.service_health_bind)
 
     @property
     def database_url(self) -> str:
@@ -147,7 +174,36 @@ class AppConfig:
             "use_mock_device": self.use_mock_device,
             "enable_device_writes": self.enable_device_writes,
             "enable_credential_writes": self.enable_credential_writes,
+            "service_poll_seconds": self.service_poll_seconds,
+            "service_health_bind": self.service_health_bind,
+            "service_live_capture": self.service_live_capture,
         }
+
+
+def _validate_health_bind(value: Any) -> None:
+    """Refuse a malformed health-endpoint bind before anything tries to serve it."""
+    if not isinstance(value, str):
+        raise ConfigurationError(
+            f"Configuration key service_health_bind must be a string, got {value!r}"
+        )
+    if not value:
+        return
+    interface, separator, probe = value.rpartition(":")
+    if not separator or not interface or not probe:
+        raise ConfigurationError(
+            f"Invalid service_health_bind {value!r}; expected 'interface:probe' "
+            "such as '127.0.0.1:8080', or an empty string to disable the endpoint"
+        )
+    try:
+        probe_number = int(probe)
+    except ValueError:
+        raise ConfigurationError(
+            f"Invalid service_health_bind {value!r}; the probe after ':' must be numeric"
+        ) from None
+    if not 1 <= probe_number <= 65535:
+        raise ConfigurationError(
+            f"Invalid service_health_bind {value!r}; the probe must be between 1 and 65535"
+        )
 
 
 def _coerce_bool(value: Any, *, name: str) -> bool:
@@ -185,6 +241,9 @@ def _environment_overrides(environ: dict[str, str]) -> dict[str, Any]:
         f"{ENV_PREFIX}USE_MOCK_DEVICE": "use_mock_device",
         f"{ENV_PREFIX}ENABLE_DEVICE_WRITES": "enable_device_writes",
         f"{ENV_PREFIX}ENABLE_CREDENTIAL_WRITES": "enable_credential_writes",
+        f"{ENV_PREFIX}SERVICE_POLL_SECONDS": "service_poll_seconds",
+        f"{ENV_PREFIX}SERVICE_HEALTH_BIND": "service_health_bind",
+        f"{ENV_PREFIX}SERVICE_LIVE_CAPTURE": "service_live_capture",
     }
     for env_name, field_name in mapping.items():
         if env_name in environ:
@@ -224,9 +283,23 @@ def load_config(
         "use_mock_device",
         "enable_device_writes",
         "enable_credential_writes",
+        "service_live_capture",
     ):
         if bool_field in settings:
             settings[bool_field] = _coerce_bool(settings[bool_field], name=bool_field)
+
+    if "service_poll_seconds" in settings:
+        raw_poll = settings["service_poll_seconds"]
+        if isinstance(raw_poll, bool) or not isinstance(raw_poll, (int, str)):
+            raise ConfigurationError(
+                f"Invalid service_poll_seconds {raw_poll!r}; expected an integer"
+            )
+        try:
+            settings["service_poll_seconds"] = int(str(raw_poll).strip())
+        except ValueError:
+            raise ConfigurationError(
+                f"Invalid service_poll_seconds {raw_poll!r}; expected an integer"
+            ) from None
 
     for text_field in ("log_level", "log_format"):
         if text_field in settings and not isinstance(settings[text_field], str):

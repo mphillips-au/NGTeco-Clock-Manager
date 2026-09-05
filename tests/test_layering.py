@@ -15,7 +15,17 @@ import pytest
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "clockmanager"
 
-CORE_PACKAGES = ["domain", "persistence", "protocol", "sync", "services", "security", "diagnostics"]
+CORE_PACKAGES = [
+    "domain",
+    "persistence",
+    "protocol",
+    "sync",
+    "services",
+    "headless",
+    "security",
+    "diagnostics",
+    "api",
+]
 
 
 def _core_modules() -> list[Path]:
@@ -79,5 +89,24 @@ def test_gui_layer_does_not_import_persistence_or_protocol_directly() -> None:
             name
             for name in names
             if name.startswith(("clockmanager.persistence", "clockmanager.protocol"))
+        }
+        assert not forbidden, f"{module} imports {sorted(forbidden)}"
+
+
+def test_api_layer_does_not_import_protocol_logic_or_persistence() -> None:
+    """The web/API boundary must go through application services.
+
+    PHASE 17: the browser never talks TCP 4370, so the API layer owns no
+    protocol logic. Only ``clockmanager.protocol.errors`` (exception types
+    for the HTTP error mapping) may be imported; persistence stays behind
+    the services as well.
+    """
+    for module in sorted((SRC / "api").rglob("*.py")):
+        names = _imported_names(module)
+        forbidden = {
+            name
+            for name in names
+            if name.startswith("clockmanager.persistence")
+            or (name.startswith("clockmanager.protocol") and name != "clockmanager.protocol.errors")
         }
         assert not forbidden, f"{module} imports {sorted(forbidden)}"

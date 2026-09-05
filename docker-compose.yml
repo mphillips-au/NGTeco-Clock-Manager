@@ -1,0 +1,31 @@
+# NGTeco Clock Manager — headless service (PHASE 16).
+#
+# Local Docker:      docker compose up -d --build
+# Synology Container Manager: Container Manager > Project > Create >
+#   "Create docker-compose.yml" > paste this file (adjust ./data path to a
+#   folder on the NAS, e.g. /volume1/docker/clockmanager/data) > Next > Done.
+#
+# First run has no device profiles: open the Windows GUI against a copy of
+# the database, or register the clock, then mount that data directory here.
+# The service only reconciles stored profiles; it never invents one.
+
+services:
+  clockmanager:
+    build: .
+    image: ngteco-clock-manager:latest
+    container_name: clockmanager
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      CLOCKMANAGER_DATA_DIR: /data
+      CLOCKMANAGER_LOG_TO_CONSOLE: "1"
+      CLOCKMANAGER_SERVICE_HEALTH_BIND: "0.0.0.0:8080"
+      # Seconds between reconciliation checks; each device still syncs on its
+      # own sync_interval_seconds.
+      CLOCKMANAGER_SERVICE_POLL_SECONDS: "60"
+      # Live-capture workers hold one connection per device; off by default
+      # because periodic reconciliation already recovers missed punches.
+      CLOCKMANAGER_SERVICE_LIVE_CAPTURE: "0"
