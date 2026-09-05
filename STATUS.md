@@ -2,6 +2,10 @@
 
 ## Current phase
 
+PHASE 16 — Synology / Linux headless service: **complete** (see "Headless
+service (PHASE 16)" below). No real-device run and no Synology hardware was
+available; the Docker image is unrun on a NAS.
+
 PHASE 15 — Capability investigation: **complete**. The first session to write
 to the real NG-MB1. The write path, the PIN offset and fingerprint enumeration
 all graduated from UNVERIFIED to proven; the read-back comparison that had been
@@ -51,10 +55,54 @@ alongside General, Payroll and Security. One new permission
 
 ## Next phase
 
-Not yet chosen. The prioritised roadmap with evidence and effort estimates is
-in `phases/PHASE-15.md`; its top items are the read-only device-settings panel
-built on `CMD_OPTIONS_RRQ` and an Australian payroll export. The planned
-Synology/headless service is `phases/PHASE-16.md`.
+PHASE 17 — Web/API boundary (in progress in a parallel session; see the
+`--serve` / `--api-serve` note under "Headless service (PHASE 16)" below).
+The prioritised roadmap with evidence and effort estimates is in
+`phases/PHASE-15.md`; its top items are the read-only device-settings panel
+built on `CMD_OPTIONS_RRQ` and an Australian payroll export.
+
+## Headless service (PHASE 16)
+
+Complete. The proven device/sync core runs without the Windows GUI as a
+Linux/Synology headless service. Verified against SQLite and the mock
+context; no real-device run.
+
+- **Service loop** (`clockmanager.headless.runner.HeadlessService`): each
+  pass runs `SyncService.background_sync_if_due` for every enabled,
+  configured device, so reconciliation, duplicate-safe inserts and offline
+  recovery are the exact code the GUI uses. No protocol code is duplicated
+  (pinned by a test: the package never imports the transport or parsers).
+- **Reconnect**: a failed sync is a result, never an exception. Consecutive
+  failures hold the device out of the loop on a 30 s doubling backoff
+  capped at 10 minutes; the service never gives up, and an unexpected
+  exception is logged without stopping the pass.
+- **Live capture** (opt-in, off by default): one worker thread per device
+  stores live punches with a one-time name snapshot; anything missed is
+  recovered by the next periodic pass. Stops cooperatively on shutdown.
+- **Health endpoint** (stdlib only, no new dependency): `GET /health`
+  (liveness, always 200 while serving) and `GET /ready` (200 after the
+  first pass completes, 503 until then). The payload is device names,
+  counts and timestamps only — no communication password, PIN, card or
+  biometric value.
+- **Lifecycle**: `clockmanager --serve` runs until SIGTERM/SIGINT (Docker
+  `ENTRYPOINT`), `--serve-once` runs one pass for cron/systemd timers.
+  Start/stop are audited as `service.start` / `service.stop`. New
+  configuration keys `service_poll_seconds` (default 60),
+  `service_health_bind` (default `127.0.0.1:8080`, empty disables) and
+  `service_live_capture`, each overridable by `CLOCKMANAGER_SERVICE_*`
+  environment variables and by `--interval` / `--health-bind` /
+  `--live` / `--no-live` flags.
+- **Docker**: `Dockerfile` (python:3.12-slim, GUI-free install, non-root
+  user, `/data` volume, `HEALTHCHECK` against `/health`) plus a
+  Synology-Container-Manager-compatible `docker-compose.yml`.
+
+> **CLI flag note for the PHASE-17 session.** This phase defined
+> `--serve` as the headless sync loop (Docker contract, tests, docs).
+> A parallel session added a second `--serve` for the web/API boundary,
+> which broke the argument parser for every CLI test. It is now
+> `--api-serve` (same behaviour, `--api-host` / `--api-port`
+> unchanged). If the API is meant to start the sync loop itself rather
+> than sit beside it, say so and the two flags can be reunified.
 
 Two of them are physical and only the operator can do them: re-enrol both
 fingerprints, and delete `ZZTEST-LONGID` at UID 901 from the device keypad.
@@ -365,6 +413,13 @@ everything biometric or card related. Those stay locked and UNVERIFIED.
   attendance, sync history and audit rows are never mutated by building or
   exporting. Windows packaging/installer is complete (PHASE 14); see
   `PACKAGING.md`.
+- The headless service (PHASE 16) only reconciles stored profiles: it never
+  creates, discovers or registers a device — that stays an operator action
+  in the GUI. The Docker image builds from the documented files but has not
+  been run on Synology hardware in this session (no NAS available); the
+  `HEALTHCHECK` assumes the default health bind, and a first run with an
+  empty data directory serves `/ready` as 503 until a profile exists and a
+  pass completes.
 - SQLite returns naive datetimes on read. `received_at` is normalised to
   aware UTC on read (`as_aware_utc`); `occurred_at` stays naive deliberately
   because it is device-local time with no known timezone — do not label it

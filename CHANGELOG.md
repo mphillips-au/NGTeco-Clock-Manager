@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+### PHASE 16 — Synology / Linux headless service (2026-09-06)
+
+The proven device/sync core runs without the Windows GUI. Verified against
+SQLite and the mock context; no real-device run, and the Docker image has
+not been run on Synology hardware.
+
+#### Service (`clockmanager.headless`, PySide6-free)
+
+- `HeadlessService.run_once()` reconciles every enabled, configured device
+  through `SyncService.background_sync_if_due` — the exact code the GUI
+  uses — so the 120-byte parser, attendance engine, live capture,
+  reconciliation and persistence are reused, never duplicated (a test
+  pins that the package never imports the transport or parsers).
+- Reconnect: failed syncs are results, not exceptions. Consecutive
+  failures back off 30 s doubling to a 10-minute cap and never give up;
+  unexpected exceptions are logged without stopping the pass.
+- Optional live-capture workers (off by default), one thread per device,
+  storing punches duplicate-safe with a one-time name snapshot; shutdown
+  is cooperative via SIGTERM/SIGINT.
+- Stdlib-only health endpoint: `GET /health` (liveness) and `GET /ready`
+  (200 after the first pass, 503 until then), carrying names/counts/
+  timestamps only — no communication password, PIN, card or biometric
+  value by construction.
+- CLI: `clockmanager --serve` (loop until signal) and `--serve-once`
+  (one pass, cron-friendly), plus `--interval`, `--health-bind`,
+  `--live` / `--no-live` overrides. New `service_poll_seconds`,
+  `service_health_bind` and `service_live_capture` settings, each with a
+  `CLOCKMANAGER_SERVICE_*` environment variable. Start/stop audited as
+  `service.start` / `service.stop`.
+- Docker: `Dockerfile` (python:3.12-slim, no GUI dependencies, non-root,
+  `/data` volume, `HEALTHCHECK` on `/health`) and a Synology Container
+  Manager compatible `docker-compose.yml`.
+
+#### Integration note
+
+A parallel session added a second `--serve` flag for the PHASE-17 API,
+breaking the argument parser; it is now `--api-serve` (`--api-host` /
+`--api-port` unchanged, no test referenced them). `--serve` stays the
+headless sync loop.
+
+#### Tests
+
+`tests/unit/test_headless_service.py` (37 tests): configuration
+round-trips and refusals, backoff growth and cap, bind parsing, sync-now
+/ not-due / skip-disabled / failure-backoff / exception-survival passes,
+health/ready lifecycle over real HTTP, secret-free snapshots, loop
+shutdown with lifecycle audit, live-worker store and stop, `--serve-once`
+CLI, and the no-duplicated-protocol AST guard. Layering tests now cover
+`clockmanager.headless`. Full suite: **916 passed**, ruff and mypy clean
+on every file this phase touched (the tree carries pre-existing ruff
+failures in the parallel session's uncommitted `api/` work).
+
 ### PHASE 15 — Capability investigation against the real NG-MB1 (2026-09-06)
 
 The first session to write to the real device (serial NBF6260700048). An

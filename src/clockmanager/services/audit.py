@@ -55,6 +55,8 @@ class AuditAction(StrEnum):
     BACKUP_CREATE = "backup.create"
     BACKUP_RESTORE = "backup.restore"
     DIAGNOSTICS_EXPORT = "diagnostics.export"
+    SERVICE_START = "service.start"
+    SERVICE_STOP = "service.stop"
 
 
 class AuditOutcome(StrEnum):

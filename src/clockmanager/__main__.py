@@ -8,11 +8,13 @@ service will start and how the bootstrap is verified on machines without Qt.
 from __future__ import annotations
 
 import argparse
+import signal
 import sys
+import threading
 from pathlib import Path
 
 from clockmanager import APPLICATION_NAME, __version__
-from clockmanager.config import save_config
+from clockmanager.config import MIN_SERVICE_POLL_SECONDS, save_config
 from clockmanager.errors import ClockManagerError
 from clockmanager.services.application import bootstrap
 from clockmanager.windows import (
@@ -69,6 +71,54 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Bootstrap configuration, logging and the database, print status, and exit.",
     )
     parser.add_argument(
+        "--serve",
+        action="store_true",
+        help=(
+            "Run the Linux/Synology headless service: reconcile every enabled "
+            "device on its own sync interval until SIGTERM/SIGINT. No GUI imports."
+        ),
+    )
+    parser.add_argument(
+        "--serve-once",
+        action="store_true",
+        help=(
+            "Run one headless reconciliation pass over every enabled device "
+            "and exit. Suitable for cron/systemd timers."
+        ),
+    )
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=None,
+        help=(
+            "Headless-service loop tick in seconds (overrides the configuration "
+            f"file; minimum {MIN_SERVICE_POLL_SECONDS})."
+        ),
+    )
+    parser.add_argument(
+        "--health-bind",
+        type=str,
+        default=None,
+        help=(
+            "Headless-service health endpoint bind as 'interface:probe' "
+            "(overrides the configuration file; empty disables the endpoint)."
+        ),
+    )
+    parser.add_argument(
+        "--live",
+        dest="live",
+        action="store_true",
+        default=None,
+        help="Enable live-capture workers in the headless service for this run.",
+    )
+    parser.add_argument(
+        "--no-live",
+        dest="live",
+        action="store_false",
+        default=None,
+        help="Disable live-capture workers in the headless service for this run.",
+    )
+    parser.add_argument(
         "--write-config",
         action="store_true",
         help="Write the resolved configuration to the configuration file and exit.",
@@ -92,6 +142,26 @@ def _build_parser() -> argparse.ArgumentParser:
         "--firewall-info",
         action="store_true",
         help="Print Windows firewall and network configuration requirements for NGTeco devices.",
+    )
+    # NOTE (PHASE 16): `--serve` is the headless sync service (above). The
+    # PHASE-17 web/API boundary keeps its own flag so the two never collide:
+    # `--api-serve` starts the API, `--serve` starts the sync loop. The API
+    # still runs "over the headless core" as its brief requires.
+    parser.add_argument(
+        "--api-serve",
+        action="store_true",
+        help="Run the web/API boundary (PHASE 17) over the headless core.",
+    )
+    parser.add_argument(
+        "--api-host",
+        default="127.0.0.1",
+        help="Host interface for --api-serve (default 127.0.0.1; never expose without HTTPS).",
+    )
+    parser.add_argument(
+        "--api-port",
+        type=int,
+        default=8080,
+        help="TCP port for --api-serve (default 8080).",
     )
     return parser
 
@@ -147,6 +217,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Windows startup status: {status_str}")
         return EXIT_OK
 
+    if args.api_serve:
+        try:
+            from clockmanager.api.server import run as run_api
+        except ImportError as exc:
+            print(
+                "The web/API boundary requires FastAPI and uvicorn. Install them with "
+                f"'pip install -e .[api]'. ({exc})",
+                file=sys.stderr,
+            )
+            return EXIT_ERROR
+        run_api(host=args.api_host, port=args.api_port)
+        return EXIT_OK
+
     try:
         context = bootstrap(data_dir=args.data_dir)
     except ClockManagerError as exc:
@@ -158,6 +241,44 @@ def main(argv: list[str] | None = None) -> int:
             path = save_config(context.config)
             print(f"Configuration written to {path}")
             return EXIT_OK
+
+        if args.interval is not None and args.interval < MIN_SERVICE_POLL_SECONDS:
+            print(
+                f"--interval must be at least {MIN_SERVICE_POLL_SECONDS} seconds.",
+                file=sys.stderr,
+            )
+            return EXIT_ERROR
+
+        if args.serve_once or args.serve:
+            from clockmanager.headless.runner import HeadlessService
+
+            service = HeadlessService(
+                context,
+                poll_seconds=args.interval,
+                health_bind=args.health_bind,
+                live_capture=args.live,
+            )
+            if args.serve_once:
+                results = service.run_once()
+                if not results:
+                    print("No enabled devices were due for a sync.")
+                for result in results:
+                    print(f"{result.device_name}: {result.summary}")
+                    if not result.ok:
+                        print(f"  error: {result.error}", file=sys.stderr)
+                return EXIT_OK
+            stop_event = threading.Event()
+
+            def _request_stop(signum: int, _frame: object) -> None:
+                print(f"Received signal {signum}; shutting down.", file=sys.stderr)
+                stop_event.set()
+
+            try:
+                signal.signal(signal.SIGINT, _request_stop)
+                signal.signal(signal.SIGTERM, _request_stop)
+            except (OSError, ValueError):  # pragma: no cover - platform without signals
+                pass
+            return service.run(stop_event)
 
         if args.headless:
             for label, value in context.status().as_rows():
