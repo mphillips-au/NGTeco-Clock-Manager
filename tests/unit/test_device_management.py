@@ -20,6 +20,7 @@ from clockmanager.domain.auth import Role
 from clockmanager.domain.models import DeviceIdentity, DeviceInfo
 from clockmanager.errors import ClockManagerError, SecurityError
 from clockmanager.persistence.database import Database, create_database, initialise_database
+from clockmanager.persistence.models import SCHEMA_VERSION
 from clockmanager.protocol.mock import MockAttendanceDevice, MockDeviceScript
 from clockmanager.services.application import ApplicationContext, bootstrap
 from clockmanager.services.devices import DeviceProfile, DeviceService
@@ -217,7 +218,7 @@ class TestLastSeenMigration:
                     text("UPDATE schema_info SET value = '6' WHERE key = 'schema_version'")
                 )
             version = initialise_database(database)
-            assert version == 7
+            assert version == SCHEMA_VERSION
             with database.engine.begin() as connection:
                 rows = connection.execute(
                     text("SELECT name, host, last_seen_at FROM devices")

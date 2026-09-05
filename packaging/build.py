@@ -75,6 +75,7 @@ def ensure_assets() -> None:
     if not ico.is_file() or not png.is_file():
         print("Generating application icon assets...")
         from packaging.generate_assets import generate_assets
+
         generate_assets()
         print("Assets generated.")
 
@@ -170,7 +171,9 @@ def verify_build(exe_path: Path | None = None) -> bool:
 
     # 2. Test --firewall-info
     print("Testing --firewall-info flag...")
-    res = subprocess.run([str(exe_path), "--firewall-info"], capture_output=True, text=True, check=False)
+    res = subprocess.run(
+        [str(exe_path), "--firewall-info"], capture_output=True, text=True, check=False
+    )
     if res.returncode != 0 or "4370" not in res.stdout:
         print(f"--firewall-info check failed: {res.stdout} {res.stderr}", file=sys.stderr)
         return False
@@ -196,8 +199,12 @@ def main() -> None:
     parser.add_argument("--dev", action="store_true", help="Build development executable.")
     parser.add_argument("--release", action="store_true", help="Build release executable.")
     parser.add_argument("--installer", action="store_true", help="Build Inno Setup installer.")
-    parser.add_argument("--all", action="store_true", help="Build release executable and installer.")
-    parser.add_argument("--verify", action="store_true", help="Run verification on built executable.")
+    parser.add_argument(
+        "--all", action="store_true", help="Build release executable and installer."
+    )
+    parser.add_argument(
+        "--verify", action="store_true", help="Run verification on built executable."
+    )
     parser.add_argument("--clean", action="store_true", help="Clean build artifacts.")
 
     args = parser.parse_args()

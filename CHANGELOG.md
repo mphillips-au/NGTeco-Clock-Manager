@@ -2,6 +2,116 @@
 
 ## Unreleased
 
+### PHASE 14 (QA) — Production QA against the real NG-MB1 (2026-09-04)
+
+> Shares a number with "PHASE 14 — Windows Packaging" below: two sessions
+> ran in parallel and both claimed 14. This entry is the
+> `phases/PHASE-14.md` brief; that one is `phases/PHASE-13.md`.
+
+The first session to run this application against the real NG-MB1 (serial
+NBF6260700048, ZMM510_TFT, Ver 8.0.4.5-7108-02). Hardening only; no feature
+was added and no user, credential or attendance record on the device was
+written, cleared or modified. Everything that touches the device here is a
+read.
+
+#### Defects found on hardware and fixed
+
+- **A 40-byte attendance record's leading uint16 is the record's own index,
+  not the user's device UID.** The MB1 uses the 40-byte form, so every punch
+  this application had ever read carried the wrong value: three consecutive
+  punches by the single enrolled user (device UID 1) stored `device_uid`
+  1, 2 and 3, and the Attendance view showed them in a column labelled "UID".
+  The parser now reports `device_uid=None` for this form. It also refuses a
+  record whose user-ID text is empty instead of falling back to the index,
+  which would have invented a user that is not enrolled. The 8-byte form,
+  where the field really is a UID, is unchanged. Duplicate detection was never
+  affected: the event key covers device, user ID, timestamp, punch and status,
+  not `device_uid`.
+- **The diagnostics trace silently corrupted attendance packets.**
+  `redact_payload_preview` decided what a payload was from its length, and a
+  120-byte body is both "three 40-byte attendance records" and "one 120-byte
+  user record" — the ordinary case on this device. It zeroed bytes 3:35 as if
+  they were a credential region, destroying the first punch's user ID, status,
+  timestamp and direction in the trace an engineer reads to diagnose exactly
+  that. The command code now decides; the shape is consulted only when the
+  command is unknown, and then still errs towards redacting. User data of an
+  unrecognised shape is now withheld rather than falling through to an
+  unredacted dump — the one path that could have leaked a credential.
+- **`clockmanager --help` crashed on a stock Windows console.** argparse wrote
+  an em dash to a cp437/cp850 code page and Python raised
+  `UnicodeEncodeError`, so a fresh install could not print its own help or
+  pipe its output. `main()` now reconfigures stdout/stderr to replace
+  unencodable characters before argparse can write anything.
+- **Corrupt timestamps became real-looking punches.** Neither packed encoding
+  has an invalid representation, so a garbled packet decoded to a valid date
+  (`0xffffffff` → the year 2133) that would be stored, totalled into a pay
+  period and reported. Both decoders now bound the year to 2000-2099 — the
+  century the epoch-2000 encodings can meaningfully describe — and refuse the
+  rest.
+
+#### Schema
+
+- Schema **8**: clears `attendance_events.device_uid`. Sync only inserts what
+  is new and never rewrites a stored punch, so the record indices already on
+  disk would have stayed on screen forever. The column is display-only, so no
+  identity, punch or history is lost; affected rows simply show a blank UID,
+  which is what a 40-byte read now records.
+
+#### Verified against the real device
+
+Discovery (a /24 scan found the clock and identified it safely) · connect
+155 ms / clock read 5 ms / reconnect 156 ms · the 120-byte user parse with
+privilege 14 mapped to Admin · 40-byte attendance records with punch 0 = IN
+and 1 = OUT and `status` 1 and 15 preserved verbatim · sync idempotence
+(3 new, then 0, then 0) · a real badged live event stored with source `live` ·
+**live recovery** (the following full sync read 4 records and inserted 0, so a
+punch captured live is not duplicated when the log is re-read) · a full
+protocol trace whose TX/RX, sanitized export and log file contained no byte of
+the device's non-empty credential region · offline behaviour (an unreachable
+device fails as a result, is recorded in the history, leaves every local view
+working, and is picked up by the next successful sync).
+
+Verified alongside, against local storage: migrations forward from every
+schema 1-7 and refusal of a newer one · backup create/preview/restore with
+confirmation required, invalid archives refused and portable exports carrying
+no credential · all three roles refused at the service layer for every
+mutation they lack · every refusal and failure audited · all eight reports in
+all four export formats · timesheets across both Australian DST transitions
+(9 h and 7 h for the same 22:00-06:00 wall-clock shift, attributed to the IN
+day) · malformed user, attendance, timestamp and live-event payloads refused
+rather than guessed at · the 120-byte builder's validation, and the standing
+guarantee that pyzk's 72-byte `set_user()` is never called.
+
+#### Packaging and installer
+
+The Windows packaging work landed mid-session, so the installer was tested
+against these changes rather than deferred:
+
+- Release PyInstaller build and Inno Setup installer both compile.
+- The frozen executable survives cp437/cp850/cp1252 for `--help`,
+  `--version`, `--headless` and the packaging session's own
+  `--firewall-info`, which carries the same em dash that used to crash the
+  CLI. That fix protects the new packaging commands too.
+- **Upgrade without data loss**: a schema-7 database left by a previous
+  install was opened by the packaged `clockmanager.exe`, migrated to 8 in
+  place, and kept every device, employee, punch and event key. Only the
+  bogus `device_uid` indices were cleared, which is the point of migration 8.
+- Silent install -> launch -> silent uninstall: the program directory and
+  Start Menu shortcuts are removed and `%LOCALAPPDATA%\NGTecoClockManager`
+  (database, logs, backups) is left untouched.
+- `pyzk` and the whole `clockmanager.protocol` package, including the fixes
+  above, are confirmed present inside the installed executable's archive, so
+  the device path ships complete.
+
+#### Not tested
+
+The **write path** (create/update/delete/PIN) was deliberately not exercised.
+It stays off by default and UNVERIFIED; proving it needs a disposable
+`ZZTEST-` account and the opt-in write suite.
+
+A device sync **driven from the installed GUI** was not performed: the frozen
+executable exposes no sync command, so the device work was done against the
+same code from source. The bundle contents were verified instead.
 ### PHASE 14 — Windows Packaging (2026-09-05)
 
 Production Windows packaging: PyInstaller builds, an Inno Setup 6

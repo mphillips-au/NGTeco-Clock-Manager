@@ -15,7 +15,12 @@ from clockmanager.persistence.database import (
     create_database,
     initialise_database,
 )
-from clockmanager.persistence.models import DeviceRecord, DeviceUserRecord, SchemaInfo
+from clockmanager.persistence.models import (
+    SCHEMA_VERSION,
+    DeviceRecord,
+    DeviceUserRecord,
+    SchemaInfo,
+)
 from clockmanager.windows import (
     APP_REGISTRY_NAME,
     RUN_REGISTRY_KEY,
@@ -141,13 +146,13 @@ def test_database_upgrade_without_data_loss(tmp_path: Path) -> None:
     # Step 2: Simulate application upgrade / restart with existing DB file
     db2 = create_database(config)
     schema_ver = initialise_database(db2)
-    assert schema_ver == 7
+    assert schema_ver == SCHEMA_VERSION
 
     with db2.session() as session:
         # Check schema version
         stored = session.get(SchemaInfo, SCHEMA_VERSION_KEY)
         assert stored is not None
-        assert stored.value == "7"
+        assert stored.value == str(SCHEMA_VERSION)
 
         # Check existing records were preserved
         dev_loaded = session.query(DeviceRecord).filter_by(name="Front Door Clock").first()
