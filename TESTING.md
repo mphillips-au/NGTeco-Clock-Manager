@@ -74,3 +74,20 @@ Before release test:
 - reports
 - permissions
 - backup/restore
+
+### Running the read-only suite against the real clock
+
+```
+CLOCKMANAGER_TEST_DEVICE_HOST=<ip>   .venv/Scripts/python.exe -m pytest tests/integration/test_real_device.py -m real_device
+```
+
+Find the address with the application's own discovery rather than guessing:
+`scan_hosts(hosts_from_cidr("192.168.0.0/24"))` probes TCP 4370 and sends no
+command. Nothing in that suite writes.
+
+### PHASE 14 status
+
+Everything in the QA list above has been exercised against the real NG-MB1
+except **install** and **upgrade**, which need the PHASE 13 packaging work,
+and **user writes**, which stay off by default and unproven. See `STATUS.md`
+("Verified on hardware") for what each one showed.

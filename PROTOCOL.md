@@ -8,9 +8,17 @@ Observed device:
 - NG-MB1
 - ZMM510_TFT
 - firmware Ver 8.0.4.5-7108-02
+- serial NBF6260700048
 
 `pyzk` can connect.
 `live_capture()` works.
+
+PHASE 14 ran this application (not raw pyzk) against that device end to end:
+LAN discovery, connect/reconnect, device info, clock read, the 120-byte user
+parse, attendance retrieval, three-times-idempotent sync, a real badged live
+event, live recovery, protocol tracing with credential redaction, and offline
+failure handling. The write path was deliberately not exercised and remains
+UNVERIFIED.
 
 ## User record
 
@@ -33,7 +41,7 @@ Known privilege:
 ## Attendance
 
 Observed fields:
-- UID
+- record index (40-byte form; see "40-byte record layout" below)
 - user ID
 - timestamp
 - status
@@ -42,6 +50,9 @@ Observed fields:
 Observed:
 - punch 0 = IN
 - punch 1 = OUT
+
+Both confirmed on the real device in PHASE 14, including a live badge that
+arrived as punch 1 (OUT).
 
 Status is independent raw metadata.
 
@@ -70,14 +81,56 @@ That dependency is isolated in one accessor that raises a clear
 
 ## Attendance record sizes
 
-The ZKTeco protocol defines 8-, 16- and 40-byte attendance records. Which one
-an MB1 uses has NOT been confirmed on the real device; the size is resolved at
-runtime from the payload and the device's own record count.
+The ZKTeco protocol defines 8-, 16- and 40-byte attendance records. The project
+NG-MB1 uses **40**, confirmed on the real device in PHASE 14: a 3-record read
+returned a 124-byte payload (4-byte prefix + 120-byte body) while the device
+reported 3 records. The size is still resolved at runtime rather than assumed,
+because other firmware in the family may differ.
 
 The record count is authoritative. Length alone is ambiguous, because every
 multiple of 40 is also a multiple of 8 and 16 — a 2-record 40-byte payload
 would otherwise parse as 10 fabricated 8-byte records. An ambiguous payload is
 refused rather than guessed at.
+
+This is not a theoretical safeguard on an MB1: every third 40-byte record makes
+the body an exact multiple of 8 *and* of 40, so the ordinary case is ambiguous
+and the count is what resolves it.
+
+### 40-byte record layout (verified, PHASE 14)
+
+```text
+0:2    record index, little-endian uint16  -- NOT the user's device UID
+2:26   user ID text, NUL-padded (24 bytes)
+26     status (raw metadata)
+27:31  packed 4-byte timestamp
+31     punch (0 IN, 1 OUT)
+32:40  reserved, observed all zero
+```
+
+The leading uint16 is the **attendance record's own index**, not the user's
+UID. Three consecutive punches by the single enrolled user (device UID 1)
+carried 1, 2 and 3 there while every user-ID field read `"1"`:
+
+```text
+rec 0: 01 00 | "1" ... | 01 | 39 ec 1a 33 | 00 | 00...
+rec 1: 02 00 | "1" ... | 01 | 8b ff 1a 33 | 01 | 00...
+rec 2: 03 00 | "1" ... | 0f | b4 1f 1b 33 | 00 | 00...
+```
+
+The parser therefore reports `device_uid=None` for this form and refuses a
+record whose user-ID text is empty rather than attributing the punch to the
+index. Schema 8 clears the indices that earlier reads stored.
+
+Observed `status` values include 1 and 15 on the same device; `status` remains
+raw metadata and is never used to infer direction.
+
+## Timestamp range
+
+Neither packed encoding has an invalid representation: every 32-bit value
+decodes to some calendar date, so a corrupt or truncated packet yields a punch
+that looks legitimate (`0xffffffff` decodes to the year 2133). Both encodings
+count from 2000, so decoding bounds the year to 2000-2099 and refuses anything
+outside it rather than storing a punch that would be counted in a pay period.
 
 ## Discovery (PHASE 08)
 

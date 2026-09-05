@@ -24,8 +24,10 @@ __all__ = [
     "EMPLOYEE_PRIVILEGE",
     "FCT_USER",
     "LIVE_EVENT_BUFFER_BYTES",
+    "MAX_DEVICE_YEAR",
     "MAX_USER_UID",
     "MB1_USER_RECORD_SIZE",
+    "MIN_DEVICE_YEAR",
     "PYZK_USER_PACKET_SIZE",
     "SIZE_PREFIX_BYTES",
     "USER_CREDENTIAL_SIZE",
@@ -123,6 +125,15 @@ WRITABLE_PRIVILEGES: Final[tuple[int, ...]] = (EMPLOYEE_PRIVILEGE, ADMIN_PRIVILE
 
 # -- Attendance ---------------------------------------------------------------
 
-#: Attendance record sizes defined by the ZKTeco protocol. Which one an MB1
-#: uses is determined at runtime from the payload, never assumed.
+#: Attendance record sizes defined by the ZKTeco protocol. The project NG-MB1
+#: was observed using **40** (PHASE 14), but the size is still resolved at
+#: runtime from the payload and the device's own record count, never assumed:
+#: other firmware in the family may differ.
 ATTENDANCE_RECORD_SIZES: Final[tuple[int, ...]] = (8, 16, 40)
+
+#: Plausible range for a device-reported year. Both ZKTeco timestamp encodings
+#: count from 2000 and neither has an "invalid" representation, so a corrupt
+#: packet decodes to a real-looking date instead of failing. Bounding the year
+#: is what stops a garbled punch from being stored and paid.
+MIN_DEVICE_YEAR: Final = 2000
+MAX_DEVICE_YEAR: Final = 2099

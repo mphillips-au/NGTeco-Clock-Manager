@@ -22,10 +22,33 @@ from clockmanager.windows import (
     set_startup_enabled,
 )
 
-__all__ = ["main"]
+__all__ = ["main", "make_console_output_safe"]
 
 EXIT_OK = 0
 EXIT_ERROR = 1
+
+
+def make_console_output_safe(*streams: object) -> None:
+    """Stop a legacy Windows console code page from killing the process.
+
+    A stock ``cmd.exe`` runs on an OEM code page (cp437/cp850) that cannot
+    encode the punctuation used throughout this application's messages, and
+    Python raises ``UnicodeEncodeError`` from ``print`` rather than degrading.
+    ``clockmanager --help`` alone was enough to crash a fresh Windows install.
+
+    Reconfiguring the streams to replace unencodable characters is deliberate:
+    an operator running a diagnostic command must get output, not a traceback.
+    Streams that cannot be reconfigured (a pipe replaced by a test, a stream
+    already closed) are left exactly as they are.
+    """
+    for stream in streams:
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="replace")
+        except (OSError, ValueError):  # pragma: no cover - defensive
+            continue
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -75,6 +98,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     """Run the application. Returns a process exit code."""
+    # Before argparse can print anything: --help and --version write straight
+    # to stdout and exit, so this has to happen ahead of parse_args().
+    make_console_output_safe(sys.stdout, sys.stderr)
     args = _build_parser().parse_args(argv)
 
     if args.firewall_info:

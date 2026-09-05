@@ -2,6 +2,16 @@
 
 ## Current phase
 
+PHASE 14 (QA) — Production QA: **complete**. The application was exercised
+end to end against the real NG-MB1 for the first time; four defects were found
+and fixed (see the CHANGELOG). Hardening only, no feature added.
+
+> **Numbering note.** Three sessions ran in parallel and two independently
+> took the number 14. "PHASE 14 — Windows packaging" below is the
+> `phases/PHASE-13.md` brief; "PHASE 14 (QA)" is the `phases/PHASE-14.md`
+> brief (now `phases/complete/PHASE-14.md`). Both are complete. The numbering
+> is worth straightening out deliberately rather than by whoever edits next.
+
 PHASE 14 — Windows packaging: **complete**. PyInstaller `onedir` builds
 (development console build and release windowed build), an Inno Setup 6
 installer, HKCU startup registration, firewall/network guidance and the
@@ -99,7 +109,7 @@ built-in mock device with no hardware attached. The mock now keeps its contents
 for the life of the application context, so the write path can be exercised end
 to end without a clock.
 
-Database schema version 7: `schema_info`, `devices`, `device_users`,
+Database schema version 8: `schema_info`, `devices`, `device_users`,
 `attendance_events`, `audit_events`, `sync_history`, `employees`,
 `employee_device_links`, `pay_schedules`, `app_users`. No user credential, card or biometric
 column exists in any of them; `app_users.password_hash` holds a salted
@@ -108,7 +118,10 @@ communication password — see `SECURITY.md`).
 
 Schema 6 (`app_users`) is PHASE 07. Schema 7 adds `devices.last_seen_at`
 (PHASE 08): the last successful contact, stamped by connection tests and
-successful syncs, `None` until a device answers.
+successful syncs, `None` until a device answers. Schema 8 (PHASE 14) adds no
+column: it clears `attendance_events.device_uid`, which held an attendance
+record index rather than a user UID on every MB1 read. Punches, identities
+and event keys are untouched.
 
 ## User management (PHASE 03)
 
@@ -198,12 +211,47 @@ Known device:
   no hardware was available in the investigation session, so no packet
   capture was taken and no disposable test user was exercised.
 
+## Verified on hardware (PHASE 14)
+
+The application was exercised end to end against the real NG-MB1
+(serial NBF6260700048, ZMM510_TFT, Ver 8.0.4.5-7108-02, 192.168.0.x).
+Everything below actually ran against the device, not a fixture:
+
+- **Discovery** — a /24 scan found the clock on TCP 4370 and identified it
+  safely (connect, read, disconnect).
+- **Connect / reconnect** — connection report: connect 155 ms, clock read
+  5 ms, drop-and-reconnect 156 ms.
+- **120-byte user parse** — the enrolled user read back with the correct UID,
+  user ID, first/last name, privilege 14 (Admin) and `has_credential_data`.
+- **Attendance** — 40-byte records confirmed; punch 0 = IN, 1 = OUT; `status`
+  values 1 and 15 both preserved verbatim.
+- **Idempotence** — three consecutive syncs: 3 new, then 0 new, then 0 new.
+- **Live capture** — a real badge produced a live event (user `1`, OUT,
+  20:27:30) which stored with source `live`.
+- **Live recovery** — the following full sync read 4 records and inserted 0:
+  the live punch matched the device's own historical row by event key, so a
+  punch captured live is not duplicated when the log is re-read.
+- **Diagnostics / TX-RX** — a full protocol trace recorded genuine CMD 9 and
+  CMD 13 payloads with the credential region zeroed. No credential byte from
+  the device's non-empty credential region appeared in the trace, the
+  sanitized export or the log file.
+- **Offline** — with an unreachable address the sync failed as a result (not
+  an exception), was recorded in the history, and every local view kept
+  working; the next successful run re-read the whole log.
+- **Roles, backup/restore, migrations, reports/exports, timesheets/DST** were
+  verified alongside, against local storage (see the PHASE 14 CHANGELOG entry).
+
+Still unproven on hardware: the **write path** (create/update/delete/PIN) and
+everything biometric or card related. Those stay locked and UNVERIFIED.
+
 ## Known limitations of the current build
 
-- **Nothing has been run against the real NG-MB1.** The adapter is covered by
-  fixtures, a fake transport and a mock device only. The opt-in integration
-  suites exist but have not been executed. Treat the adapter as unproven on
-  hardware until they are.
+- The **read path is now proven on the real NG-MB1** (PHASE 14, serial
+  NBF6260700048): discovery, connect, device info, clock read, the 120-byte
+  user parser, attendance retrieval, sync idempotence, diagnostics and TX/RX
+  capture all ran against the hardware. The **write path is still unproven** —
+  see the next entry. Anything not listed under "Verified on hardware (PHASE
+  14)" below remains fixture-proven only.
 - **The write path is UNVERIFIED.** It is built on the verified 120-byte record
   and is covered by unit tests, but no MB1 has accepted a record from it.
   `WRITE_USERS` and `DELETE_USERS` are `UNVERIFIED`; unlocking them reports
@@ -217,8 +265,12 @@ Known device:
   their PIN. Only ever exercise it on a disposable account.
 - The UID assigned to a new user is the lowest free one this application can
   see. Whether the MB1 accepts an application-chosen UID is unverified.
-- Attendance record size (8/16/40) on a real MB1 is still unconfirmed; the
-  parser resolves it at runtime and refuses ambiguous payloads.
+- Attendance record size on the project MB1 is **40 bytes**, confirmed on
+  hardware (PHASE 14). The parser still resolves the size at runtime from the
+  device's record count and still refuses ambiguous payloads, because other
+  firmware in the family may differ. The count is load-bearing, not
+  belt-and-braces: a 3-record 40-byte body is 120 bytes, which also divides by
+  8, so length alone is ambiguous in the ordinary case.
 - The live-capture loop depends on pyzk's name-mangled `_ZK__sock` and
   `_ZK__ack_ok`, and the write path on `_ZK__send_command`. pyzk is pinned to
   `==0.9` because of this.
@@ -247,9 +299,8 @@ Known device:
 - `clockmanager.sync` now implements keys, reconciliation and sources; the
   headless/Linux service path uses it through `context.sync` like the GUI.
 - Attendance is stored locally and reconciled on every sync; the Attendance
-  view works offline. Nothing has been run against the real NG-MB1 yet — the
-  sync is proven against fixtures, the fake transport and the mock device
-  only.
+  view works offline. Sync is now proven on the real NG-MB1 (PHASE 14):
+  three consecutive syncs inserted 3, then 0, then 0.
 - Reports and exports are derived read-only views (PHASE 06); raw
   attendance, sync history and audit rows are never mutated by building or
   exporting. Windows packaging/installer is complete (PHASE 14); see
@@ -263,17 +314,17 @@ Known device:
   link. PHASE 05 resolves the real employee independently: timesheets match
   stored punches to employees through the canonical user ID plus every linked
   device user ID, so the snapshot never affects calculation.
-- LAN discovery has not been run against real hardware: probing and safe
-  identification are proven against loopback sockets and the mock device
-  only. A scan finds candidates; only a connection test or sync proves one.
+- LAN discovery is proven on real hardware (PHASE 14): a /24 scan found the
+  project clock on TCP 4370 and identified it safely. A scan still only finds
+  candidates; only a connection test or sync proves one.
 - Backup restore migrates an older database forward and refuses a newer
   schema outright; cross-version restores beyond that are untested.
   Restoring replaces the live database file contents in place — the safety
   backup is the way back.
-- Transport-level TX/RX capture runs only against real hardware and, like
-  everything else here, has not touched a real NG-MB1: it is proven against
-  a fake transport, and mock traces honestly time device operations
-  instead of showing packets.
+- Transport-level TX/RX capture is proven on the real NG-MB1 (PHASE 14): a
+  full trace recorded genuine CMD 9 and CMD 13 payloads with the credential
+  region zeroed. Mock traces still have no socket and honestly time device
+  operations instead of showing packets.
 
 ## Employees / timesheets (PHASE 05)
 

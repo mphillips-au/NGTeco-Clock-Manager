@@ -20,7 +20,9 @@ from struct import unpack
 from clockmanager.domain.models import AttendanceEvent, DeviceUser
 from clockmanager.protocol.constants import (
     ATTENDANCE_RECORD_SIZES,
+    MAX_DEVICE_YEAR,
     MB1_USER_RECORD_SIZE,
+    MIN_DEVICE_YEAR,
     SIZE_PREFIX_BYTES,
     USER_CREDENTIAL_SLICE,
     USER_FIRST_NAME_SLICE,
@@ -91,6 +93,19 @@ def decode_zk_time(raw: bytes) -> datetime:
     value //= 12
     year = value + 2000
 
+    # The packed form has no invalid encodings: every 32-bit value decodes to
+    # some calendar date, so a corrupt or truncated packet yields a punch that
+    # looks legitimate. 0xffffffff decodes to the year 2133, which would be
+    # stored, counted in a pay period and reported as real. The encoding is
+    # epoch-2000 and the field cannot express a date before that, so bound the
+    # year to the century it can meaningfully describe and refuse the rest.
+    if not MIN_DEVICE_YEAR <= year <= MAX_DEVICE_YEAR:
+        raise DeviceParseError(
+            f"Device sent a timestamp in the year {year}, outside the plausible "
+            f"range {MIN_DEVICE_YEAR}-{MAX_DEVICE_YEAR}. Refusing to store a "
+            "punch from a corrupt packet."
+        )
+
     try:
         return datetime(year, month, day, hour, minute, second)  # noqa: DTZ001
     except ValueError as exc:
@@ -103,8 +118,14 @@ def decode_zk_timehex(raw: bytes) -> datetime:
         raise DeviceParseError(f"Live event timestamp must be 6 bytes, got {len(raw)}.")
 
     year, month, day, hour, minute, second = unpack("6B", raw)
+    full_year = year + 2000
+    if not MIN_DEVICE_YEAR <= full_year <= MAX_DEVICE_YEAR:
+        raise DeviceParseError(
+            f"Live event carried the year {full_year}, outside the plausible "
+            f"range {MIN_DEVICE_YEAR}-{MAX_DEVICE_YEAR}."
+        )
     try:
-        return datetime(year + 2000, month, day, hour, minute, second)  # noqa: DTZ001
+        return datetime(full_year, month, day, hour, minute, second)  # noqa: DTZ001
     except ValueError as exc:
         raise DeviceParseError(f"Device sent an invalid live timestamp: {exc}") from exc
 
@@ -274,9 +295,21 @@ def _parse_attendance_record(
         user_id = str(numeric_user_id)
         device_uid = None
     elif record_size == 40:
-        uid, raw_user_id, status, packed_time, punch, _space = unpack("<H24sB4sB8s", record)
-        user_id = _decode_text(raw_user_id, encoding=encoding) or str(uid)
-        device_uid = int(uid)
+        # Verified on the project NG-MB1 (PHASE 14): the leading uint16 is the
+        # attendance record's own index, NOT the user's device UID. Three
+        # consecutive punches by user UID 1 carried 1, 2, 3 there. It must not
+        # be reported as a device UID, and it must never stand in for a user
+        # ID -- doing so invents a user that is not on the device.
+        _record_index, raw_user_id, status, packed_time, punch, _space = unpack(
+            "<H24sB4sB8s", record
+        )
+        user_id = _decode_text(raw_user_id, encoding=encoding)
+        if not user_id:
+            raise DeviceParseError(
+                "A 40-byte attendance record carried no user ID. Refusing to "
+                "attribute the punch to a guessed identity."
+            )
+        device_uid = None
     else:  # pragma: no cover - guarded by _resolve_attendance_record_size
         raise DeviceParseError(f"Unsupported attendance record size {record_size}.")
 

@@ -51,7 +51,7 @@ __all__ = [
 
 #: Bumped whenever the schema changes. Every bump needs a matching entry in
 #: :data:`clockmanager.persistence.migrations.MIGRATIONS`.
-SCHEMA_VERSION: Final = 7
+SCHEMA_VERSION: Final = 8
 
 
 def utc_now() -> datetime:

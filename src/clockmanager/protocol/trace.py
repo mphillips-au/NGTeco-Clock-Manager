@@ -176,19 +176,37 @@ def _looks_like_user_payload(payload: bytes) -> bool:
 def redact_payload_preview(payload: bytes, *, command: int | None = None) -> str:
     """Hex preview of a received payload with user credentials zeroed.
 
-    Buffers shaped like user data (or read with the user-data command) get
-    per-record credential masking; anything else is previewed as-is with a
-    byte count, since attendance and live-event bytes carry no credentials.
+    The command the payload was read with decides what it is. Only the shape
+    is consulted when the command is unknown, and then erring towards
+    redaction: over-redacting a diagnostic preview is safe, under-redacting
+    leaks a credential.
+
+    Shape alone is not enough to identify user data. A 40-byte attendance
+    record is the size the project NG-MB1 actually uses, so every third
+    attendance record makes the body an exact multiple of 120 bytes and it
+    used to be masked as one user record -- silently blanking a real punch's
+    user ID, status, timestamp and direction in the trace an engineer is
+    reading to diagnose exactly that.
     """
-    if command == CMD_USERTEMP_RRQ or _looks_like_user_payload(payload):
-        prefix = payload[:SIZE_PREFIX_BYTES]
-        body = payload[SIZE_PREFIX_BYTES:]
-        redacted = b"".join(
-            redact_user_record_bytes(body[offset : offset + MB1_USER_RECORD_SIZE])
-            for offset in range(0, len(body), MB1_USER_RECORD_SIZE)
-        )
-        return format_hex_preview(prefix + redacted)
-    return format_hex_preview(payload)
+    is_user_data = command == CMD_USERTEMP_RRQ or (
+        command is None and _looks_like_user_payload(payload)
+    )
+    if not is_user_data:
+        return format_hex_preview(payload)
+
+    if not _looks_like_user_payload(payload):
+        # User data of an unrecognised shape: the credential region cannot be
+        # located, so no byte of it may be shown. Refuse the preview rather
+        # than falling through to the unredacted branch.
+        return f"<{len(payload)} byte(s) of user data withheld: not a whole 120-byte record>"
+
+    prefix = payload[:SIZE_PREFIX_BYTES]
+    body = payload[SIZE_PREFIX_BYTES:]
+    redacted = b"".join(
+        redact_user_record_bytes(body[offset : offset + MB1_USER_RECORD_SIZE])
+        for offset in range(0, len(body), MB1_USER_RECORD_SIZE)
+    )
+    return format_hex_preview(prefix + redacted)
 
 
 class RecordingTransport:

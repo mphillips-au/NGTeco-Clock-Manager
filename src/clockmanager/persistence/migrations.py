@@ -313,6 +313,31 @@ def _migrate_to_7(connection: Connection) -> None:
     _add_column_if_missing(connection, "devices", "last_seen_at", "DATETIME")
 
 
+def _migrate_to_8(connection: Connection) -> None:
+    """Clear ``attendance_events.device_uid`` values that were never a user UID.
+
+    PHASE 14 verified on the real NG-MB1 that its attendance records are 40
+    bytes and that the record's leading uint16 is the record's own index, not
+    the user's device UID: three consecutive punches by user UID 1 carried 1,
+    2 and 3. Until that was corrected the parser stored the index in
+    ``device_uid``, and the Attendance view showed it in a column labelled
+    "UID".
+
+    Nothing rewrites a stored punch afterwards -- sync only inserts what is
+    new -- so those values would stay on screen forever. The column is
+    display-only (it is not part of the duplicate-detection key, which covers
+    device, user ID, timestamp, punch and status), so clearing it loses no
+    identity and no history: the affected rows simply show a blank UID, which
+    is what the application now records for a 40-byte read.
+
+    Only NG-MB1 data exists at this schema version, and the MB1 uses the
+    40-byte form, so every stored value is one of these indices.
+    """
+    connection.execute(
+        text("UPDATE attendance_events SET device_uid = NULL WHERE device_uid IS NOT NULL")
+    )
+
+
 def _parse_stored_datetime(value: str) -> datetime:
     """Parse a SQLite-stored datetime string back into a datetime."""
     from datetime import datetime as _datetime
@@ -364,6 +389,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=7,
         description="Add devices.last_seen_at (PHASE 08)",
         apply=_migrate_to_7,
+    ),
+    Migration(
+        version=8,
+        description="Clear attendance_events.device_uid: on the MB1 it held a record index, not a user UID (PHASE 14)",
+        apply=_migrate_to_8,
     ),
 )
 
