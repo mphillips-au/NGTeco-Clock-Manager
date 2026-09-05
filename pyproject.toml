@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ngteco-clock-manager"
-version = "0.1.0"
+version = "0.13.0"
 description = "Windows-first attendance management application for NGTeco NG-MB1 devices."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -30,6 +30,7 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.5",
     "mypy>=1.10",
+    "pyinstaller>=6.0",
 ]
 
 [project.scripts]
@@ -57,7 +58,7 @@ filterwarnings = ["error::DeprecationWarning:clockmanager.*"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["src", "tests"]
+src = ["src", "tests", "packaging"]
 
 [tool.ruff.lint]
 select = [
@@ -78,10 +79,11 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# Only the GUI layer is permitted to import PySide6 (see ARCHITECTURE.md).
+# Only the GUI layer and packaging scripts are permitted to import PySide6 (see ARCHITECTURE.md).
 "src/clockmanager/gui/*" = ["TID251"]
 "tests/test_layering.py" = ["TID251"]
 "tests/gui/*" = ["TID251"]
+"packaging/*" = ["TID251"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "PySide6".msg = "The reusable core must not import PySide6; only clockmanager.gui may."

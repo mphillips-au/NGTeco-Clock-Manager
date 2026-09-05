@@ -2,6 +2,68 @@
 
 ## Unreleased
 
+### PHASE 13 — Windows Packaging (2026-09-04)
+
+Production Windows packaging: PyInstaller builds, an Inno Setup 6
+installer, versioning strategy and the release procedure. Full detail in
+`PACKAGING.md`; summary in `STATUS.md` under "Windows packaging (PHASE
+13)".
+
+- `packaging/build.py`: unified build automation (`--assets`, `--dev`,
+  `--release`, `--installer`, `--verify`, `--all`, `--clean`).
+- `packaging/clockmanager.spec`: PyInstaller `onedir` spec producing a
+  console development build (`clockmanager-dev.exe`) and a windowed
+  release build (`clockmanager.exe`) with embedded PE version info and
+  icon.
+- `packaging/installer.iss`: Inno Setup 6 script — per-user install
+  (`PrivilegesRequired=lowest`), Start Menu and optional desktop
+  shortcuts, optional launch-at-Windows-startup task, clean uninstall
+  that never touches the user data directory.
+- `packaging/generate_assets.py` + `packaging/assets/`: generated
+  application icon (`.ico`/`.png`).
+- `src/clockmanager/windows.py`: new stdlib-only Windows platform module
+  — HKCU `Run` key startup registration and firewall/network guidance
+  (TCP/UDP 4370). No PySide6 import, preserving GUI-import layering
+  (`tests/test_layering.py` extended accordingly).
+- `src/clockmanager/__main__.py`: new `--enable-startup`,
+  `--disable-startup`, `--status-startup` and `--firewall-info` CLI
+  flags.
+- `src/clockmanager/gui/app.py`: application window icon resolution
+  (works both from source and from a PyInstaller bundle).
+- Version bumped to `0.13.0` across `pyproject.toml`,
+  `src/clockmanager/__init__.py`, `packaging/installer.iss` and
+  `packaging/version_info.txt`; consistency enforced by
+  `tests/unit/test_packaging.py`.
+
+#### Tests
+
+- `tests/unit/test_packaging.py` (build artefact / version consistency
+  checks) and `tests/unit/test_windows.py` (startup registration and
+  firewall guidance) — full suite: 804 passed, 17 deselected (`ruff`,
+  `mypy` clean).
+
+#### Verified this session
+
+- `python packaging/build.py --release` compiles successfully.
+- `python packaging/build.py --verify` passes against the compiled
+  `dist\clockmanager\clockmanager.exe`: `--version`, `--firewall-info`
+  and `--headless` bootstrap (real config/DB/log paths under
+  `%LOCALAPPDATA%\NGTecoClockManager`, schema 7) all succeed.
+- `python packaging/build.py --installer` compiled
+  `NGTecoClockManager-Setup-0.13.0.exe` using Inno Setup 6.
+- Full install lifecycle exercised end-to-end on this machine: silent
+  install (`/VERYSILENT /SUPPRESSMSGBOXES`), Start Menu shortcut
+  creation, `--version`/`--headless` against the installed executable,
+  then silent uninstall — confirmed the program directory and Start Menu
+  shortcuts are removed while `%LOCALAPPDATA%\NGTecoClockManager`
+  (database, logs, backups) is left completely untouched.
+
+#### Not verified this session
+
+- No real NG-MB1 hardware was available, so the device-connection step of
+  the release checklist was not exercised against real hardware in this
+  session (consistent with every prior phase).
+
 ### PHASE 11 — Biometric / Card Investigation (2026-09-04)
 
 Investigation only: no card, fingerprint or face operation was implemented,
