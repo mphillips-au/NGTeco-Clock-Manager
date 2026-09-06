@@ -2,6 +2,14 @@
 
 ## Current phase
 
+PHASE 17 — Web/API boundary: **complete**. A FastAPI REST layer over the
+existing application services (auth, roles, devices, employees, users,
+attendance, live state, timesheets, reports, audit, sync), verified
+against SQLite and the mock context plus a live-server smoke test. No
+protocol logic duplicated; the browser never touches TCP 4370. Served
+with `clockmanager --api-serve` (`--serve` stays the PHASE-16 sync
+loop). Full entry in `CHANGELOG.md`.
+
 PHASE 16 — Synology / Linux headless service: **complete** (see "Headless
 service (PHASE 16)" below). No real-device run and no Synology hardware was
 available; the Docker image is unrun on a NAS.
@@ -70,8 +78,10 @@ alongside General, Payroll and Security. One new permission
 
 ## Next phase
 
-PHASE 17 — Web/API boundary (in progress in a parallel session; see the
-`--serve` / `--api-serve` note under "Headless service (PHASE 16)" below).
+PHASE 18 — web frontend (planned, `phases/PHASE-18.md`): the browser
+client for the PHASE-17 boundary. Open questions it owns: live-capture
+streaming (websocket/SSE vs polling `/api/live/*`), session handling
+around the in-memory tokens, and HTTPS termination.
 The prioritised roadmap with evidence and effort estimates is in
 `phases/PHASE-15.md`; its top items are the read-only device-settings panel
 built on `CMD_OPTIONS_RRQ` and an Australian payroll export.
@@ -165,8 +175,12 @@ Layer separation is in place and enforced by tests:
 - `clockmanager.security` — redaction helpers
 - `clockmanager.diagnostics` — structured JSON logging with a redacting filter
   on every handler
-- `clockmanager.gui` — PySide6 application. `theme.py` holds one `Palette`
-  per light/dark theme and generates the whole stylesheet from those tokens;
+- `clockmanager.api` — FastAPI REST boundary over the services (PHASE 17,
+  PySide6-free): bearer-token auth, roles, devices/discovery, device
+  users, attendance, sync triggers, live state, employees, schedules,
+  timesheets, reports/exports, audit, health/status. No protocol logic;
+  served with `clockmanager --api-serve`.
+- `clockmanager.gui` — PySide6 application. `theme.py` holds one `Palette`  per light/dark theme and generates the whole stylesheet from those tokens;
   `icons.py` draws navigation icons and initials avatars at runtime (no image
   assets); `views/common.py` holds the shared page header, table, empty-state,
   confirmation and toast helpers every view uses; `views/charts.py` paints the
@@ -189,7 +203,9 @@ Layer separation is in place and enforced by tests:
   `Permission.MANAGE_PAYROLL` (administrators only).
 
 Entry point `clockmanager` starts the GUI; `clockmanager --headless` runs the
-same bootstrap without importing PySide6.
+same bootstrap without importing PySide6. `clockmanager --serve` runs the
+PHASE-16 headless sync loop; `clockmanager --api-serve` serves the
+PHASE-17 REST boundary over the same core.
 
 Set `CLOCKMANAGER_USE_MOCK_DEVICE=1` to run the whole application against the
 built-in mock device with no hardware attached. The mock now keeps its contents

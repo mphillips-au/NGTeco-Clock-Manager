@@ -216,6 +216,28 @@ without confirmation nothing changes.
 The browser must never connect directly to TCP 4370.
 The headless service is the network boundary.
 
+## Web/API boundary (PHASE 17)
+
+`clockmanager.api` serves browsers over REST; all device I/O happens
+server-side through the application services.
+
+- Login exchanges a password for an opaque bearer token (24 h expiry,
+  in-memory only: a restart logs everyone out). Passwords travel only
+  on setup/login/password calls and are verified by `AuthService`;
+  nothing else accepts one.
+- Every route carries the token holder's role into the service call, so
+  the service layer refuses regardless of what the client claims. Reads
+  need only a login; writes need the same permission as the GUI action.
+- Passwords, PINs and the device communication password are write-only
+  over the wire: no response schema carries one. The communication
+  password is exposed only as `has_communication_password`.
+- Serve HTTPS in production: tokens and passwords must not travel in
+  cleartext past localhost. There is no login throttling or lockout
+  yet — failures are audited, guessing is not slowed.
+- Backup/restore and protocol diagnostics are deliberately outside the
+  web boundary: the former moves a database copy holding the stored
+  device secret, the latter is admin/developer-mode tooling.
+
 ## Logging
 
 Use structured logs with redaction.

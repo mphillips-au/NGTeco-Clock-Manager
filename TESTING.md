@@ -88,6 +88,15 @@ option-write method exists, a table-read payload is never previewed, and an
 unavailable section degrades to a note rather than an exception. "Unknown"
 and "None" enrolment are asserted to stay distinct.
 
+## Web/API
+
+`tests/unit/test_api.py` drives the FastAPI boundary with `TestClient`
+against the mock device: login/token lifecycle, role refusals, device
+CRUD without secrets, locked-write refusal, an unlocked mock write
+round-trip, duplicate-safe sync, reports/exports and audit gating. No
+test opens TCP 4370 itself — device I/O happens server-side through
+the services, pinned by the API layering test.
+
 ## QA
 
 Before release test:
