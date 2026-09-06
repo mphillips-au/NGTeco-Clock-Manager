@@ -2,6 +2,102 @@
 
 ## Unreleased
 
+### PHASE 17 — Web/API boundary over the headless core (2026-09-06)
+
+A FastAPI REST boundary over the existing application services, built for
+the future web frontend (PHASE 18). Verified against SQLite and the mock
+context; no real-device run. Manually smoke-tested as a live server
+(`--api-serve` + mock device: health, first-admin setup, login, device
+create, OpenAPI serving 44 paths).
+
+#### What it exposes
+
+- **Auth** (`/api/auth/...`): first-run setup, login (generic failure
+  message, failures audited), logout, `me`, the role/permission matrix.
+  A successful login issues an opaque in-memory bearer token (24 h
+  expiry, revoked on logout and on password change); passwords travel
+  only on setup/login/password calls. Account administration
+  (list/create/role/active/password) is admin-only.
+- **Devices** (`/api/devices/...`): profile CRUD, local-only statuses,
+  connection test, plus read-only discovery (probe/scan/identify) with
+  `register_discovered` as the only storing path. `GET
+  /api/devices/{id}/inspect` exposes the PHASE-15-wiring device
+  information in one call — identity with capacity counters,
+  allow-listed settings, fingerprint enrolment metadata (counts only,
+  never templates) and the device operation log — read-only end to end,
+  with unreadable sections degrading to notes. The communication
+  password is write-only: responses carry only
+  `has_communication_password`, and omitting it on update keeps the
+  stored secret.
+- **Device users** (`/api/devices/{id}/users...`): list, enrolment
+  (fingerprint counts only, never templates), read-one, create/update,
+  and delete behind `?confirmed=true`. The service refuses unless the
+  installation unlocks device writing; every attempt is audited.
+- **Attendance / sync** (`/api/attendance/...`,
+  `/api/devices/{id}/sync`, `/api/sync/history`): stored reads that keep
+  working with the clock down, and manual/initial/incremental/recovery
+  sync triggers. A device failure arrives as a failed result, not a
+  raise.
+- **Live state** (`/api/live/status`, `/api/live/recent`): per-device
+  stored/live-sourced counts plus last sync outcome, and stored
+  live-capture punches newest-first. Stored state, never an open device
+  socket: a browser refresh cannot miss a punch and no browser ever
+  holds a device connection.
+- **Employees / pay schedules / timesheets** (`/api/employees/...`,
+  `/api/schedules/...`, `/api/timesheets...`): full employee lifecycle
+  with device links, admin-gated schedule administration, and derived
+  timesheet builds (one period, current period).
+- **Reports / audit** (`/api/reports/{type}`, `.../export`,
+  `/api/audit...`): all eight derived reports as JSON plus
+  CSV/XLSX/PDF/JSON file exports (every export audited), and the
+  append-only audit log behind `audit.view`.
+- **System**: unauthenticated `GET /api/health` (counts only, for
+  containers), authenticated `GET /api/status`, interactive docs at
+  `/api/docs`. Error mapping: role refusal → 403, capability refusal →
+  403, validation → 400, device failure → 502; no traceback or secret
+  ever leaves the server.
+- **CLI**: `clockmanager --api-serve` (uvicorn, `--api-host` /
+  `--api-port`, default `127.0.0.1:8080`). `--serve` stays the PHASE-16
+  headless sync loop; the two sit beside each other.
+
+#### Architecture
+
+No protocol logic is duplicated and the browser never touches TCP 4370:
+every route calls an application service, pinned by a layering test
+(the API may import only `protocol.errors` exception types for the HTTP
+mapping, never the transport or parsers; persistence stays behind the
+services too). New `api` extra (`fastapi`, `uvicorn`) in
+`pyproject.toml`, also in `dev` with `httpx` for the tests. No database
+migration: the API adds no tables.
+
+#### Tests
+
+`tests/unit/test_api.py` (24 tests, all against the mock device):
+setup/login/logout/me, role matrix, admin-only accounts and device
+profiles, secret-free device CRUD, device inspection sections with the
+unknown-device refusal, locked-write refusal (403),
+unlocked mock write round-trip (create → read-back → unconfirmed
+refusal → confirmed delete), duplicate-safe sync with history, viewer
+sync refusal, live status/recent shapes, employee lifecycle, payroll
+gating with timesheet builds, all-reports JSON plus CSV export with the
+missing-parameter refusal, and audit gating with secret-free entries.
+Full suite: **951 passed** (22 real-device deselected), ruff and mypy
+clean on every file this phase touched.
+
+#### Known limitations
+
+- Tokens live in process memory: a restart logs everyone out, and there
+  is no login throttling or lockout (same as the GUI). Serve HTTPS in
+  production — bearer tokens must not travel in cleartext past
+  localhost.
+- Device I/O runs synchronously in the server process; a slow clock
+  holds one worker while it answers. Live-capture streaming
+  (websocket/SSE) is a PHASE-18 decision; this phase exposes live
+  *state*, not a live *feed*.
+- Backup/restore and protocol diagnostics stay out of the web boundary
+  for now: the former moves a database copy containing the stored
+  device secret, the latter is admin/developer-mode tooling.
+
 ### PHASE 15 (wiring) — the proven capabilities, surfaced in the app (2026-09-06)
 
 `phases/PHASE-15.md` proved four things on the real NG-MB1 that the
