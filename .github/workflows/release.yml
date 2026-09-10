@@ -29,7 +29,6 @@ jobs:
         shell: pwsh
     env:
       QT_QPA_PLATFORM: offscreen
-      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
 

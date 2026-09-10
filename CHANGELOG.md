@@ -53,6 +53,13 @@ ships in it; earlier entries were never released as a versioned build.
   publishing. The tag must match `__version__`.
 - `packaging/build.py --all` and `--verify` now exit non-zero when the
   smoke test fails; previously the result was ignored.
+- The smoke test no longer crashes on output encoding. The frozen
+  executable writes in the console code page (its em dash is byte 0x97 in
+  cp1252), and the first release run set `PYTHONUTF8=1`, so decoding as
+  UTF-8 raised `UnicodeDecodeError` after a good build. Undecodable bytes
+  are now replaced (the checks match ASCII only), and the workflow no
+  longer sets `PYTHONUTF8`. Reproduced locally before the fix and passing
+  after it under both encodings.
 - Version 0.13.0 → **0.14.0** in all four manifests.
 - `PACKAGING.md` section 8 is now the GitHub release procedure; section 9
   documents the notification-area and single-instance behaviour.
