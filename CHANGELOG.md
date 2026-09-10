@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### PHASE 18 — Site agent and hosted portal design brief (2026-09-11, docs only)
+
+- **Decision recorded (2026-09-10):** the web version is a hosted portal
+  (own VPS, Postgres) plus an outbound-only site agent (Windows service,
+  systemd or Docker) on each clock's network. This replaces the on-site
+  `--serve` + `--api-serve` + web UI design. `PLAN.md` and the
+  `ARCHITECTURE.md` future-structure diagram are updated.
+- **`phases/PHASE-18.md` is the design brief:** package ownership, the
+  agent protocol (HTTPS with long-polling), serial-based v2 event keys,
+  enrolment and credentials, offline behaviour and clock drift, gated
+  remote commands, the Postgres model and SQLite migration, packaging and
+  auto-update, the desktop app's future, the threat model, a
+  public-sources look at ZKTeco ADMS push (UNVERIFIED for the MB1), a
+  roadmap 18A–18H, and the open decisions and risks.
+- **Renumbered:** the web-frontend brief moved to `phases/PHASE-19.md`,
+  content unchanged, and now depends on PHASE 18.
+- **Found, not fixed:** today's code does not meet the one-owner rule.
+  `--serve --live` opens a second session per pass beside the live
+  session, the single-instance lock is GUI-only and per data folder, and
+  `--api-serve` does device I/O itself. Scheduled for 18A and noted in
+  `STATUS.md`.
+- No application code changed. The clock was not contacted. No tests were
+  run (documentation only).
+
 ## 0.14.0 — 2026-09-10 (first GitHub release)
 
 The first published build. Everything below this heading down to PHASE 00
