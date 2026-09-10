@@ -150,6 +150,24 @@ def build_installer() -> Path:
     return installer_exe
 
 
+def _run_built_exe(exe_path: Path, flag: str) -> subprocess.CompletedProcess[str]:
+    """Run the built executable with one flag and capture its output.
+
+    The frozen executable writes in the console code page, while this
+    script may be decoding as UTF-8 (``PYTHONUTF8=1``); its messages contain
+    an em dash, which is 0x97 in cp1252 and invalid UTF-8. Undecodable bytes
+    are replaced so a mismatch can never crash the smoke test. Every check
+    below looks for ASCII text only.
+    """
+    return subprocess.run(
+        [str(exe_path), flag],
+        capture_output=True,
+        text=True,
+        errors="replace",
+        check=False,
+    )
+
+
 def verify_build(exe_path: Path | None = None) -> bool:
     """Run verification checks against the compiled executable."""
     if exe_path is None:
@@ -163,7 +181,7 @@ def verify_build(exe_path: Path | None = None) -> bool:
 
     # 1. Test --version
     print("Testing --version flag...")
-    res = subprocess.run([str(exe_path), "--version"], capture_output=True, text=True, check=False)
+    res = _run_built_exe(exe_path, "--version")
     if res.returncode != 0 or "NGTeco Clock Manager" not in res.stdout:
         print(f"--version check failed: {res.stdout} {res.stderr}", file=sys.stderr)
         return False
@@ -171,9 +189,7 @@ def verify_build(exe_path: Path | None = None) -> bool:
 
     # 2. Test --firewall-info
     print("Testing --firewall-info flag...")
-    res = subprocess.run(
-        [str(exe_path), "--firewall-info"], capture_output=True, text=True, check=False
-    )
+    res = _run_built_exe(exe_path, "--firewall-info")
     if res.returncode != 0 or "4370" not in res.stdout:
         print(f"--firewall-info check failed: {res.stdout} {res.stderr}", file=sys.stderr)
         return False
@@ -181,7 +197,7 @@ def verify_build(exe_path: Path | None = None) -> bool:
 
     # 3. Test --headless bootstrap
     print("Testing --headless bootstrap mode...")
-    res = subprocess.run([str(exe_path), "--headless"], capture_output=True, text=True, check=False)
+    res = _run_built_exe(exe_path, "--headless")
     if res.returncode != 0:
         print(f"--headless bootstrap failed: {res.stdout} {res.stderr}", file=sys.stderr)
         return False
