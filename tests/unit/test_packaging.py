@@ -23,6 +23,7 @@ from clockmanager.persistence.models import (
 )
 from clockmanager.windows import (
     APP_REGISTRY_NAME,
+    INSTALLER_MUTEX_NAME,
     RUN_REGISTRY_KEY,
     get_firewall_guidance,
 )
@@ -85,6 +86,9 @@ def test_packaging_spec_configuration() -> None:
     assert r'Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"' in iss_text
     # Clean install & uninstall
     assert "UninstallDisplayIcon" in iss_text
+    # Setup refuses to overwrite a running copy, including one in the tray
+    assert f"AppMutex={INSTALLER_MUTEX_NAME}" in iss_text
+    assert "SetupAppRunningError=" in iss_text
 
 
 def test_windows_data_paths_isolation(tmp_path: Path) -> None:

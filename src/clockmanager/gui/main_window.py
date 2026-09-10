@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from PySide6.QtCore import QSize, QThreadPool, QTimer
+from PySide6.QtCore import QSize, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QActionGroup, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -107,7 +107,18 @@ class _NavigationEntry:
 
 
 class MainWindow(QMainWindow):
-    """Navigation shell hosting the application views."""
+    """Navigation shell hosting the application views.
+
+    With close-to-tray on, the close button only hides the window: live
+    capture and background sync keep running until :meth:`request_quit`
+    (File > Exit, or Quit on the tray icon) or Logout.
+    """
+
+    #: The close button hid the window instead of closing it.
+    hidden_to_tray = Signal()
+    #: The window really closed (Exit, Quit or Logout) and has shut down its
+    #: background work.
+    closed = Signal()
 
     def __init__(
         self,
@@ -123,6 +134,11 @@ class MainWindow(QMainWindow):
         self._current_user = current_user
         self._role = current_user.role if current_user is not None else None
         self._logout_requested = False
+        #: Whether the close button hides instead of closing. Off unless the
+        #: GUI entry point finds a notification area to hide into.
+        self._close_to_tray = False
+        #: Set by an explicit quit so the close is not turned into a hide.
+        self._quitting = False
 
         self.setWindowTitle(f"{APPLICATION_NAME} {__version__}")
         self.resize(1100, 720)
@@ -389,7 +405,7 @@ class MainWindow(QMainWindow):
             logout_action.triggered.connect(self._logout)
             file_menu.addSeparator()
         exit_action = file_menu.addAction("E&xit")
-        exit_action.triggered.connect(self.close)
+        exit_action.triggered.connect(self.request_quit)
 
         view_menu = self.menuBar().addMenu("&View")
         for entry in self._entries:
@@ -451,6 +467,34 @@ class MainWindow(QMainWindow):
         self._logout_requested = True
         self.close()
 
+    # -- close-to-tray --------------------------------------------------------
+
+    @property
+    def close_to_tray(self) -> bool:
+        return self._close_to_tray
+
+    def set_close_to_tray(self, enabled: bool) -> None:
+        """Choose whether the close button hides the window or closes it."""
+        self._close_to_tray = enabled
+
+    def prepare_to_quit(self) -> None:
+        """Let the next close through. Windows logoff/shutdown calls this."""
+        self._quitting = True
+
+    def request_quit(self) -> None:
+        """Close for real, stopping live capture and background sync."""
+        self.prepare_to_quit()
+        self.close()
+
+    def bring_to_front(self) -> None:
+        """Show the window, restored and focused, wherever it was."""
+        if self.isMinimized():
+            self.showNormal()
+        else:
+            self.show()
+        self.raise_()
+        self.activateWindow()
+
     def _show_about(self) -> None:
         QMessageBox.about(
             self,
@@ -495,9 +539,15 @@ class MainWindow(QMainWindow):
     # -- lifecycle ------------------------------------------------------------
 
     def closeEvent(self, event: Any) -> None:  # noqa: N802 - Qt override
+        if self._close_to_tray and not self._quitting and not self._logout_requested:
+            event.ignore()
+            self.hide()
+            self.hidden_to_tray.emit()
+            return
         timer = getattr(self, "_background_timer", None)
         if timer is not None:
             timer.stop()
         self.live_view.shutdown()
         QThreadPool.globalInstance().waitForDone(5000)
         super().closeEvent(event)
+        self.closed.emit()

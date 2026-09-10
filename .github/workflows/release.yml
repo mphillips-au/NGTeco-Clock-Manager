@@ -1,0 +1,109 @@
+# Windows installer build and GitHub Release.
+#
+# Push a tag "vX.Y.Z" (matching clockmanager.__version__) to build, test and
+# publish NGTecoClockManager-Setup-X.Y.Z.exe as a GitHub Release.
+# "Run workflow" on the Actions tab builds the same installer as a
+# downloadable workflow artifact without publishing anything.
+# The procedure is in PACKAGING.md, section 8.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: python -m pip install -e ".[gui,dev]"
+
+      - name: Tag matches the application version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          $version = python -c "import clockmanager; print(clockmanager.__version__)"
+          if ("v$version" -ne "${{ github.ref_name }}") {
+            throw "Tag ${{ github.ref_name }} does not match clockmanager.__version__ ($version)"
+          }
+
+      - name: Lint and type check
+        run: |
+          ruff check .
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          mypy
+
+      - name: Test
+        run: pytest
+
+      - name: Install Inno Setup
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+
+      - name: Build release executable and installer
+        run: python packaging/build.py --all
+
+      - name: Checksum
+        id: installer
+        run: |
+          $installer = Get-ChildItem dist/installer/NGTecoClockManager-Setup-*.exe | Select-Object -First 1
+          $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLower()
+          "$hash  $($installer.Name)" | Out-File -Encoding ascii "$($installer.FullName).sha256"
+          "path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
+          "name=$($installer.Name)" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            dist/installer/*.exe
+            dist/installer/*.sha256
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $notes = @"
+          ## Install
+
+          1. Download **${{ steps.installer.outputs.name }}** below and run it. No administrator rights are needed.
+          2. Windows SmartScreen may say "Windows protected your PC" because the installer is not code-signed yet. Choose **More info**, then **Run anyway**.
+          3. Start **NGTeco Clock Manager**, create the administrator account, then add the clock under **Settings > Device**.
+
+          Upgrading keeps your data: the database, settings and backups live in ``%LOCALAPPDATA%\NGTecoClockManager`` and are never touched by the installer or uninstaller.
+
+          Verify the download with the ``.sha256`` file: ``Get-FileHash .\${{ steps.installer.outputs.name }} -Algorithm SHA256``.
+          "@
+          gh release create "${{ github.ref_name }}" `
+            "${{ steps.installer.outputs.path }}" `
+            "${{ steps.installer.outputs.path }}.sha256" `
+            --title "NGTeco Clock Manager ${{ github.ref_name }}" `
+            --notes $notes `
+            --generate-notes `
+            --verify-tag

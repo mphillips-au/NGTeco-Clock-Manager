@@ -2,6 +2,19 @@
 
 ## Current phase
 
+**Release 0.14.0 — first GitHub release (2026-09-10).** Not a numbered
+phase: notification-area mode, one running copy per data folder, and the
+tag-driven GitHub release workflow. Closing the window hides it next to the
+Windows clock while live capture and background sync carry on; tray *Quit*
+or *File > Exit* quits; launching again brings the running window forward.
+Releases are published by pushing a `vX.Y.Z` tag (`PACKAGING.md` section 8).
+Full entry in `CHANGELOG.md`.
+
+> **Known limit.** The GUI still requires an operator login before live
+> capture or background sync run, so "always running" means "running since
+> somebody signed in". An unattended collector that starts with Windows and
+> needs no login is the headless service (`--serve`), not the tray app.
+
 PHASE 17 — Web/API boundary: **complete**. A FastAPI REST layer over the
 existing application services (auth, roles, devices, employees, users,
 attendance, live state, timesheets, reports, audit, sync), verified

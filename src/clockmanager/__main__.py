@@ -12,9 +12,10 @@ import signal
 import sys
 import threading
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from clockmanager import APPLICATION_NAME, __version__
-from clockmanager.config import MIN_SERVICE_POLL_SECONDS, save_config
+from clockmanager.config import MIN_SERVICE_POLL_SECONDS, default_data_dir, save_config
 from clockmanager.errors import ClockManagerError
 from clockmanager.services.application import bootstrap
 from clockmanager.windows import (
@@ -23,6 +24,9 @@ from clockmanager.windows import (
     is_windows,
     set_startup_enabled,
 )
+
+if TYPE_CHECKING:
+    from clockmanager.gui.single_instance import SingleInstance
 
 __all__ = ["main", "make_console_output_safe"]
 
@@ -166,6 +170,31 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _launches_gui(args: argparse.Namespace) -> bool:
+    """Whether this run ends in the GUI rather than a one-shot or service mode."""
+    return not (args.write_config or args.serve or args.serve_once or args.headless)
+
+
+def _claim_gui_instance(data_dir: Path | None) -> tuple[SingleInstance | None, bool]:
+    """Claim the data folder for this GUI launch.
+
+    Returns ``(instance, handed_off)``. ``handed_off`` means another copy
+    already owns the folder and has been asked to show itself, so this
+    process should exit without touching the database. ``instance`` is
+    ``None`` when PySide6 is missing; the GUI branch reports that itself.
+    """
+    try:
+        from clockmanager.gui.single_instance import SingleInstance
+    except ImportError:
+        return None, False
+    resolved = data_dir.expanduser() if data_dir is not None else default_data_dir()
+    instance = SingleInstance.for_data_dir(resolved)
+    if instance.acquire():
+        return instance, False
+    instance.activate_running_instance()
+    return None, True
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the application. Returns a process exit code."""
     # Before argparse can print anything: --help and --version write straight
@@ -229,6 +258,12 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_ERROR
         run_api(host=args.api_host, port=args.api_port)
         return EXIT_OK
+
+    instance: SingleInstance | None = None
+    if _launches_gui(args):
+        instance, handed_off = _claim_gui_instance(args.data_dir)
+        if handed_off:
+            return EXIT_OK
 
     try:
         context = bootstrap(data_dir=args.data_dir)
@@ -295,12 +330,14 @@ def main(argv: list[str] | None = None) -> int:
             )
             return EXIT_ERROR
 
-        return run_gui(context)
+        return run_gui(context, instance=instance)
     except ClockManagerError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return EXIT_ERROR
     finally:
         context.shutdown()
+        if instance is not None:
+            instance.release()
 
 
 if __name__ == "__main__":
