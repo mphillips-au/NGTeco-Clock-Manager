@@ -9,7 +9,7 @@ recovered by the next full sync's re-read.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QShortcut
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -46,6 +46,9 @@ _MAX_ROWS = 500
 
 class LiveEventsView(QWidget):
     """Starts and stops live capture and lists events as they arrive."""
+
+    #: ``True`` when a capture thread starts, ``False`` when it has finished.
+    capture_state_changed = Signal(bool)
 
     def __init__(
         self,
@@ -164,6 +167,7 @@ class LiveEventsView(QWidget):
         self._start_button.setEnabled(False)
         self._stop_button.setEnabled(True)
         worker.start()
+        self.capture_state_changed.emit(True)
 
     def _cached_names(self) -> dict[str, str]:
         profile = self._service.first_enabled_profile()
@@ -245,6 +249,7 @@ class LiveEventsView(QWidget):
 
     def _on_finished(self) -> None:
         self._worker = None
+        self.capture_state_changed.emit(False)
         self._start_button.setEnabled(role_allows(self._role, Permission.LIVE_CAPTURE))
         self._stop_button.setEnabled(False)
         if self._rows:

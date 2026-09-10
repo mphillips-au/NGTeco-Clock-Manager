@@ -33,7 +33,7 @@ def get_version() -> str:
     for line in init_py.read_text(encoding="utf-8").splitlines():
         if line.startswith("__version__"):
             return line.split("=")[1].strip().strip('"').strip("'")
-    return "0.13.0"
+    raise SystemExit(f"__version__ not found in {init_py}")
 
 
 def find_iscc() -> Path | None:
@@ -233,10 +233,11 @@ def main() -> None:
         ensure_assets()
         exe = build_pyinstaller("release")
         build_installer()
-        verify_build(exe)
+        if not verify_build(exe):
+            sys.exit(1)
 
-    if args.verify:
-        verify_build()
+    if args.verify and not verify_build():
+        sys.exit(1)
 
 
 if __name__ == "__main__":

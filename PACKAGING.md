@@ -161,29 +161,86 @@ python packaging/build.py --all
 
 ---
 
-## 8. Release Procedure Checklist
+## 8. Release Procedure (GitHub Releases)
 
-Follow these steps when preparing an official release:
+Releases are built by GitHub Actions (`.github/workflows/release.yml`) on a
+clean Windows runner, not on a developer machine. Pushing a version tag is
+the whole release:
 
-1. **Working Tree Cleanliness**:
-   - Ensure all work on the current phase is committed or staged cleanly.
-2. **Version Bump**:
-   - Update version string in `pyproject.toml`, `src/clockmanager/__init__.py`, `packaging/installer.iss`, and `packaging/version_info.txt`.
-3. **Run Code Quality & Test Suite**:
+1. **Bump the version** in the four manifests listed in section 6. The tag
+   must match `clockmanager.__version__`; the workflow refuses otherwise.
+2. **Update `CHANGELOG.md`** (entries under the version heading) and
+   **`STATUS.md`**.
+3. **Merge to `main`** through a pull request as usual.
+4. **Tag and push** from an up-to-date `main`:
    ```powershell
-   .\.venv\Scripts\ruff check .
-   .\.venv\Scripts\mypy
-   .\.venv\Scripts\pytest
+   git checkout main
+   git pull
+   git tag -a v0.14.0 -m "Release v0.14.0"
+   git push origin v0.14.0
    ```
-4. **Build Release & Installer**:
-   ```powershell
-   python packaging/build.py --all
-   ```
-5. **Verify Built Artifacts**:
-   - Confirm `dist\clockmanager\clockmanager.exe` runs `--headless` and boots database.
-   - Confirm `dist\installer\NGTecoClockManager-Setup-<version>.exe` exists and is non-empty.
-6. **Documentation**:
-   - Update `CHANGELOG.md` with release notes under the version heading.
-   - Update `STATUS.md` recording phase completion.
-7. **Git Tag**:
-   - Tag the release: `git tag -a v<version> -m "Release v<version>"`
+5. **Wait for the "Release" workflow** (Actions tab, roughly 10 minutes). It
+   runs `ruff`, `mypy` and the full test suite, builds the release
+   executable and the Inno Setup installer, runs the `--verify` smoke test
+   against the built executable, and publishes a GitHub Release named after
+   the tag with two files attached:
+   - `NGTecoClockManager-Setup-<version>.exe`
+   - `NGTecoClockManager-Setup-<version>.exe.sha256`
+6. **Share the release page:**
+   `https://github.com/mphillips-au/NGTeco-Clock-Manager/releases/latest`
+
+If any step fails, nothing is published. Fix the problem, delete the tag
+(`git push origin :refs/tags/v0.14.0`, then `git tag -d v0.14.0`) and tag
+again.
+
+**Test build without publishing:** Actions tab > *Release* > *Run workflow*
+builds the same installer and attaches it to the workflow run as an
+artifact. No tag, no release.
+
+**Local build** (no GitHub involved): `python packaging/build.py --all`
+leaves the installer in `dist\installer\`. Needs Inno Setup 6 and the `dev`
+extra (PyInstaller). `--all` now exits non-zero if the smoke test fails.
+
+### Code signing
+
+The installer is **not code-signed**. Windows SmartScreen shows "Windows
+protected your PC" on first download; the user chooses *More info* >
+*Run anyway*. The release notes say so. Signing (Azure Trusted Signing, or an
+OV/EV certificate) removes the warning and is a later step.
+
+---
+
+## 9. Running in the Background (Notification Area)
+
+Closing the main window hides it in the Windows notification area (next to
+the clock) instead of quitting. Live capture and the periodic background
+sync keep running.
+
+- **Restore:** click the tray icon, choose *Open NGTeco Clock Manager* from
+  its right-click menu, or launch the application again from any shortcut.
+- **Quit:** right-click the tray icon > *Quit*, or *File > Exit* in the
+  window. Either stops live capture and background sync cleanly.
+- **Logout** ends the session as before and returns to the login dialog; the
+  tray icon stays.
+- **Preference:** *Settings > General > Running in the background*. Turning
+  it off makes the close button quit, as in earlier versions. Stored per
+  Windows user in Qt `QSettings`, like the theme.
+- **Windows logoff/shutdown** always closes the application; hiding never
+  blocks it.
+
+### One running copy per data folder
+
+Launching the application while it is already running brings the running
+window forward instead of starting a second copy, which would run a second
+sync loop and a second live-capture session against the same clock. The lock
+is a per-session Windows named mutex derived from the data folder; the
+running copy is reached through a named pipe restricted to the same Windows
+account, and it acknowledges the request so a busy window is not missed.
+`--data-dir` gives a separate, independent instance.
+
+### Upgrading while it is running
+
+The running application holds the mutex `NGTecoClockManagerRunning`, and the
+installer's `AppMutex` names the same mutex. Setup and the uninstaller stop
+and ask the user to quit it from the notification area before replacing any
+files.

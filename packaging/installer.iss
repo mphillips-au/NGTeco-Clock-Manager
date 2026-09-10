@@ -2,7 +2,7 @@
 ; Production Windows Installer
 
 #ifndef MyAppVersion
-#define MyAppVersion "0.13.0"
+#define MyAppVersion "0.14.0"
 #endif
 
 #define MyAppName "NGTeco Clock Manager"
@@ -27,6 +27,11 @@ PrivilegesRequiredOverridesAllowed=dialog
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 
+; The application holds this mutex while running, including when it is hidden
+; in the notification area (clockmanager.windows.INSTALLER_MUTEX_NAME). Setup
+; and the uninstaller refuse to replace files under a running copy.
+AppMutex=NGTecoClockManagerRunning
+
 ; Installer output settings
 OutputDir=..\dist\installer
 OutputBaseFilename=NGTecoClockManager-Setup-{#MyAppVersion}
@@ -45,6 +50,11 @@ DisableProgramGroupPage=auto
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Messages]
+; A copy hidden in the notification area is easy to miss; say where to look.
+SetupAppRunningError=%1 is still running. It may be hidden in the notification area next to the Windows clock.%n%nRight-click its icon there and choose Quit, then click OK to continue, or Cancel to exit.
+UninstallAppRunningError=%1 is still running. It may be hidden in the notification area next to the Windows clock.%n%nRight-click its icon there and choose Quit, then click OK to continue, or Cancel to exit.
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked

@@ -2,6 +2,85 @@
 
 ## Unreleased
 
+## 0.14.0 — 2026-09-10 (first GitHub release)
+
+The first published build. Everything below this heading down to PHASE 00
+ships in it; earlier entries were never released as a versioned build.
+
+### Notification-area mode, single instance, GitHub releases (2026-09-10)
+
+#### Running in the background
+
+- **Close hides, Quit quits.** Closing the main window now hides it in the
+  Windows notification area. Live capture and the periodic background sync
+  keep running. The tray icon's menu has *Open* and *Quit*; clicking the
+  icon restores the window; its tooltip says who is signed in and whether
+  live capture is running. A one-time balloon explains where the window
+  went. *File > Exit* and tray *Quit* stop capture and sync cleanly, as
+  closing did before; *Logout* is unchanged.
+- **Preference** in *Settings > General > Running in the background*, on by
+  default, stored per Windows user in `QSettings` like the theme, applied
+  to the open window immediately. Desktops without a notification area
+  (and the offscreen test platform) keep the old close-to-quit behaviour.
+- **Windows logoff/shutdown is never vetoed.** `commitDataRequest` lets the
+  close through before Qt asks the windows to close.
+- `LiveEventsView.capture_state_changed(bool)` is new; the tray listens to it.
+
+#### One running copy per data folder
+
+- Launching the application again (desktop shortcut, Start Menu, startup)
+  brings the running window forward and exits. The second process never
+  bootstraps, so it writes no database, log or audit entry.
+- The lock is a Windows named mutex keyed on a hash of the data folder, so
+  `--data-dir` still gives an independent instance and Windows accounts never
+  collide. The hand-off travels over a `QLocalServer` pipe restricted to
+  the same account (`UserAccessOption`), and the running copy acknowledges
+  it. Without the acknowledgement a request sent while the running copy's
+  UI thread was busy was lost; a test now holds the UI thread for 1.5 s to
+  pin that.
+- `AllowSetForegroundWindow` is granted by the launching process so Windows
+  raises the window rather than just flashing its taskbar button.
+
+#### Installer and releases
+
+- The installer sets `AppMutex=NGTecoClockManagerRunning`, which every GUI
+  process now holds, so Setup and the uninstaller refuse to replace files
+  under a running copy. The message says to look in the notification area.
+- `.github/workflows/release.yml`: pushing a `vX.Y.Z` tag runs ruff, mypy
+  and the full test suite on a Windows runner, builds the executable and
+  installer, runs the `--verify` smoke test, and publishes a GitHub Release
+  with the installer and its SHA-256. *Run workflow* builds without
+  publishing. The tag must match `__version__`.
+- `packaging/build.py --all` and `--verify` now exit non-zero when the
+  smoke test fails; previously the result was ignored.
+- Version 0.13.0 → **0.14.0** in all four manifests.
+- `PACKAGING.md` section 8 is now the GitHub release procedure; section 9
+  documents the notification-area and single-instance behaviour.
+
+#### Verified
+
+- 18 new tests (`tests/gui/test_tray.py`, `tests/unit/test_windows.py`):
+  hide versus close versus quit versus logout, session-end handling, tray
+  menu and tooltip, the preference, the Settings toggle, and single-instance
+  hand-off between **real separate processes**, including a full
+  `python -m clockmanager` second launch that exits without creating the
+  data folder.
+- Full suite 1023 passed (22 real-device tests deselected as usual); ruff
+  and mypy clean. `build.py --all` built and smoke-tested
+  `NGTecoClockManager-Setup-0.14.0.exe` (42.5 MB) on this machine.
+- **Frozen build on a real desktop:** a second launch of the release
+  `clockmanager.exe` against the same data folder exited in about 1 s with
+  code 0, leaving one process, and `NGTecoClockManagerRunning` was held.
+  Qt reports a notification area with balloon support in this session.
+- **Installer:** silent install (exit 0); re-running Setup while the
+  installed app was running was refused (exit 1) and left the app running;
+  after quitting, reinstall succeeded (exit 0); silent uninstall removed the
+  program folder, Start Menu entry and uninstall key and left the data
+  folder alone.
+- Not verified by automation: clicking the tray icon and its menu on a real
+  desktop. The offscreen test platform has no notification area, so those
+  paths are covered only at the signal level.
+
 ### PHASE 17 — Web/API boundary over the headless core (2026-09-06)
 
 A FastAPI REST boundary over the existing application services, built for

@@ -3,7 +3,8 @@
 Five sections, each on its own tab:
 
 ``General``
-    Appearance, and where this installation keeps its data.
+    Appearance, what the close button does, and where this installation
+    keeps its data.
 ``Device``
     The stored connection profile, device state and discovery — the existing
     :class:`DeviceSettingsView`, hosted here rather than in the navigation.
@@ -49,6 +50,7 @@ from clockmanager.diagnostics.logging_setup import get_logger
 from clockmanager.domain.auth import Permission, Role, normalise_role
 from clockmanager.domain.payroll import PayScheduleType
 from clockmanager.gui.theme import ThemeName, current_theme, set_theme
+from clockmanager.gui.tray import close_to_tray_enabled, set_close_to_tray_enabled, tray_supported
 from clockmanager.gui.views.common import (
     build_table,
     confirm,
@@ -171,7 +173,7 @@ class SettingsView(QWidget):
     # -- general --------------------------------------------------------------
 
     def _build_general(self) -> QWidget:
-        """Appearance and where this installation keeps its files."""
+        """Appearance, close behaviour, and where this installation keeps its files."""
         page = QWidget(self)
 
         self._light_radio = QRadioButton("Light", page)
@@ -191,6 +193,27 @@ class SettingsView(QWidget):
         appearance.setLayout(appearance_inner)
         appearance.setMaximumWidth(640)
 
+        self._close_to_tray = QCheckBox(
+            "Keep running in the notification area when the window is closed", page
+        )
+        self._close_to_tray.setChecked(close_to_tray_enabled())
+        self._close_to_tray.toggled.connect(self._on_close_to_tray_toggled)
+        background_inner = QVBoxLayout()
+        background_inner.addWidget(self._close_to_tray)
+        if tray_supported():
+            hint = (
+                "Background sync and live capture carry on while the window is hidden. "
+                "To exit, right-click the icon next to the clock and choose Quit, "
+                "or use File > Exit."
+            )
+        else:
+            self._close_to_tray.setEnabled(False)
+            hint = "This desktop has no notification area, so closing the window exits."
+        background_inner.addWidget(muted_label(hint, page))
+        background = QGroupBox("Running in the background", page)
+        background.setLayout(background_inner)
+        background.setMaximumWidth(640)
+
         self._about_table = build_table(["Item", "Value"], page, sortable=False)
         self._about_table.setMaximumWidth(640)
         status = self._context.status()
@@ -203,6 +226,7 @@ class SettingsView(QWidget):
 
         layout = QVBoxLayout(page)
         layout.addWidget(appearance)
+        layout.addWidget(background)
         layout.addWidget(about, stretch=1)
         layout.addStretch(1)
         return page
@@ -217,6 +241,13 @@ class SettingsView(QWidget):
         repaint = getattr(window, "repaint_theme_artwork", None)
         if callable(repaint):
             repaint()
+
+    def _on_close_to_tray_toggled(self, enabled: bool) -> None:
+        """Remember the choice and apply it to the open window straight away."""
+        set_close_to_tray_enabled(enabled)
+        apply = getattr(self.window(), "set_close_to_tray", None)
+        if callable(apply):
+            apply(enabled and tray_supported())
 
     # -- payroll --------------------------------------------------------------
 

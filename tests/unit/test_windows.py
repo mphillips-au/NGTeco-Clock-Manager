@@ -74,3 +74,30 @@ def test_cli_startup_flags() -> None:
 
     args = parser.parse_args(["--status-startup"])
     assert args.status_startup is True
+
+
+def test_named_mutex_reports_an_existing_holder() -> None:
+    name = "NGTecoClockManager-unit-test-mutex"
+    first = windows.NamedMutex.create(name)
+    if not windows.is_windows():
+        assert first is None
+        return
+    assert first is not None
+    assert not first.already_existed
+    second = windows.NamedMutex.create(name)
+    try:
+        assert second is not None
+        assert second.already_existed
+    finally:
+        if second is not None:
+            second.close()
+        first.close()
+        first.close()  # closing twice is harmless
+    third = windows.NamedMutex.create(name)
+    assert third is not None
+    assert not third.already_existed
+    third.close()
+
+
+def test_allow_any_foreground_window_never_raises() -> None:
+    windows.allow_any_foreground_window()

@@ -1,7 +1,8 @@
 """Windows platform integration helpers.
 
-Provides startup management via HKCU Run registry key and Windows firewall /
-network guidance. Uses Python standard library only (no PySide6 imports) to
+Provides startup management via HKCU Run registry key, Windows firewall /
+network guidance, and the named mutexes the single-instance guard and the
+installer rely on. Uses Python standard library only (no PySide6 imports) to
 maintain architectural layering.
 """
 
@@ -17,7 +18,10 @@ __all__ = [
     "APP_REGISTRY_NAME",
     "DEVICE_TCP_PORT",
     "DEVICE_UDP_PORT",
+    "INSTALLER_MUTEX_NAME",
     "RUN_REGISTRY_KEY",
+    "NamedMutex",
+    "allow_any_foreground_window",
     "get_firewall_guidance",
     "get_startup_command",
     "is_startup_enabled",
@@ -29,6 +33,13 @@ APP_REGISTRY_NAME: Final[str] = "NGTecoClockManager"
 RUN_REGISTRY_KEY: Final[str] = r"Software\Microsoft\Windows\CurrentVersion\Run"
 DEVICE_TCP_PORT: Final[int] = 4370
 DEVICE_UDP_PORT: Final[int] = 4370
+#: Held by every running GUI process. ``packaging/installer.iss`` names the
+#: same mutex in ``AppMutex`` so Setup refuses to overwrite a running copy
+#: (one hidden in the notification area is easy to forget about).
+INSTALLER_MUTEX_NAME: Final[str] = "NGTecoClockManagerRunning"
+
+_ERROR_ALREADY_EXISTS: Final[int] = 183
+_ASFW_ANY: Final[int] = -1
 
 
 def is_windows() -> bool:
@@ -144,3 +155,61 @@ def get_firewall_guidance() -> dict[str, Any]:
             "Device discovery uses UDP broadcast which does not traverse across different subnets/routers.",
         ],
     }
+
+
+class NamedMutex:
+    """A Windows named mutex, held for as long as this object is open.
+
+    Only its existence matters: nothing ever waits on it. Creating one that
+    another process already holds still succeeds, and :attr:`already_existed`
+    says so, which is how a second launch learns the first is running. The
+    operating system releases it when the process exits, however it exits.
+
+    On other platforms :meth:`create` returns ``None``.
+    """
+
+    def __init__(self, handle: int, *, already_existed: bool) -> None:
+        self._handle: int | None = handle
+        self.already_existed = already_existed
+
+    @classmethod
+    def create(cls, name: str) -> NamedMutex | None:
+        """Create or open ``name``. ``None`` off Windows or if the call fails."""
+        if not is_windows():
+            return None
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create_mutex = kernel32.CreateMutexW
+        create_mutex.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+        create_mutex.restype = wintypes.HANDLE
+        handle = create_mutex(None, False, name)
+        if not handle:
+            return None
+        return cls(handle, already_existed=ctypes.get_last_error() == _ERROR_ALREADY_EXISTS)
+
+    def close(self) -> None:
+        """Release this process's handle. Safe to call more than once."""
+        handle, self._handle = self._handle, None
+        if handle is None or not is_windows():
+            return
+        import ctypes
+
+        ctypes.WinDLL("kernel32").CloseHandle(ctypes.c_void_p(handle))
+
+
+def allow_any_foreground_window() -> None:
+    """Let another process take the foreground from this one.
+
+    Windows refuses a background process that tries to raise its own window
+    and flashes its taskbar button instead. The process the operator just
+    launched does hold the foreground, so it grants that right before asking
+    the running copy to show itself. No-op off Windows.
+    """
+    if not is_windows():
+        return
+    import ctypes
+
+    with contextlib.suppress(OSError, AttributeError):
+        ctypes.WinDLL("user32").AllowSetForegroundWindow(_ASFW_ANY)
