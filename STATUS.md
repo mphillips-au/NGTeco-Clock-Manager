@@ -14,6 +14,7 @@ Full entry in `CHANGELOG.md`.
 > capture or background sync run, so "always running" means "running since
 > somebody signed in". An unattended collector that starts with Windows and
 > needs no login is the headless service (`--serve`), not the tray app.
+> The planned fix is the PHASE 18 site agent running as a Windows service.
 
 PHASE 17 — Web/API boundary: **complete**. A FastAPI REST layer over the
 existing application services (auth, roles, devices, employees, users,
@@ -70,6 +71,10 @@ and fixed (see the CHANGELOG). Hardening only, no feature added.
 > `phases/PHASE-15.md`, and the three planned briefs moved up one —
 > Synology/headless is `PHASE-16.md`, Web/API `PHASE-17.md`, web frontend
 > `PHASE-18.md`. Their content is unchanged.
+>
+> On 2026-09-11 the same was done again: the site-agent design brief became
+> `PHASE-18.md`, and the web frontend moved up one to `PHASE-19.md` with
+> its content unchanged (header renumbered, a dependency note added).
 
 PHASE 14 — Windows packaging: **complete**. PyInstaller `onedir` builds
 (development console build and release windowed build), an Inno Setup 6
@@ -91,13 +96,32 @@ alongside General, Payroll and Security. One new permission
 
 ## Next phase
 
-PHASE 18 — web frontend (planned, `phases/PHASE-18.md`): the browser
-client for the PHASE-17 boundary. Open questions it owns: live-capture
-streaming (websocket/SSE vs polling `/api/live/*`), session handling
-around the in-memory tokens, and HTTPS termination.
-The prioritised roadmap with evidence and effort estimates is in
-`phases/PHASE-15.md`; its top items are the read-only device-settings panel
-built on `CMD_OPTIONS_RRQ` and an Australian payroll export.
+**PHASE 18 — site agent and hosted portal: design brief drafted, awaiting
+operator review** (`phases/PHASE-18.md`, docs only; no code changed, clock
+not contacted). It records the 2026-09-10 decision: a centrally hosted
+portal plus an outbound-only agent at each site, replacing the on-site
+`--serve` + `--api-serve` + web UI design. The build steps are 18A–18H, and
+the MVP (18A + 18B + 18C) is read-only: punches flow from the site to the
+portal. The first build step is **18A — core prerequisites**, which starts
+once the operator has answered the brief's decision list (section 12).
+
+> **The one-owner rule is not met by today's code** (found while writing
+> the brief, fixed in 18A): `--serve --live` holds a live session and opens
+> a second session for every periodic pass; the single-instance lock covers
+> only the GUI, and only per data folder; and `--api-serve` does device I/O
+> in its own process. Until 18A, run only one of the GUI, `--serve` and
+> `--api-serve` against a given clock, and prefer `--serve` without
+> `--live`.
+
+PHASE 19 — web frontend (`phases/PHASE-19.md`, formerly `PHASE-18.md`,
+content unchanged): now depends on PHASE 18 and targets the hosted portal
+API rather than the on-site `--api-serve`. Its open questions about
+streaming, sessions and HTTPS are answered for the agent link in PHASE 18
+section 2; the browser side remains PHASE 19's.
+
+The PHASE 15 roadmap (`phases/PHASE-15.md`) still stands for device work;
+its top items are the read-only device-settings panel built on
+`CMD_OPTIONS_RRQ` and an Australian payroll export.
 
 ## Headless service (PHASE 16)
 

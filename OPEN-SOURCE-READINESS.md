@@ -58,6 +58,6 @@ of scope here and stays tracked in `STATUS.md` / `phases/PHASE-18.md`.
 
 ## Deliberately not in this checklist
 
-- PHASE 18 web frontend, operator physical actions (fingerprint
+- PHASE 18 site agent and hosted portal, PHASE 19 web frontend, operator physical actions (fingerprint
   re-enrolment, keypad delete of UID 901), security hardening (DPAPI,
   login throttling), and protocol gaps — all tracked in `STATUS.md`.
